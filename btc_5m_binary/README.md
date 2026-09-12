@@ -632,6 +632,14 @@ BTC/**USD**. For live decisions read the mid. For backtesting it does not
 matter: Binance's BTCUSDT spread is about a cent against a median five-minute
 move of about 32 dollars, and only 0.008% of bars move less than half a spread.
 
+### Latency, which this strategy is unusually sensitive to
+
+predict.fun's primary servers are in **ap-northeast-1 (Tokyo)**. The entry
+window is 45 seconds wide, so where you run from is not a detail: from Japan or
+nearby the round trip is tens of milliseconds, from Europe or the US east coast
+it is a couple of hundred plus BNB Chain block time. Measure yours before
+trusting the `entry_window` default.
+
 ### predict.fun accounts: EOA or Smart Wallet
 
 Two ways to reach the protocol, and they need different things:
