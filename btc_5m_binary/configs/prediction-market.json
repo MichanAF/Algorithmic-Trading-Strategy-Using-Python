@@ -1,0 +1,24 @@
+{
+  "name": "btc-5m-binary-prediction-market",
+  "gate_stack": [
+    "data_integrity",
+    "volatility_regime",
+    "trend_alignment",
+    "persistence",
+    "participation"
+  ],
+  "betting": {
+    "payout_mode": "contract_price",
+    "contract_price": 0.52,
+    "fee_bps": 20.0,
+    "required_edge": 0.04,
+    "tie_policy": "void",
+    "deadband_bps": 0.5,
+    "max_signal_age_seconds": 30,
+    "min_seconds_to_expiry": 90
+  },
+  "risk": {
+    "kelly_fraction": 0.20,
+    "max_stake_pct": 0.015
+  }
+}
