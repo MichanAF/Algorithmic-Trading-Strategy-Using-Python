@@ -6,6 +6,8 @@
     python -m btc5m compare  --data btc_5m.csv       # which stack should I run?
     python -m btc5m overlap  --data btc_5m.csv       # are the gates independent?
     python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
+    python -m btc5m probe    --testnet                     # see predict.fun's real payload
+    python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m menu                             # the gate menu
 """
@@ -24,6 +26,7 @@ from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
 from .data import BarSeries, fetch_klines, load_csv, synthetic
 from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
+from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .features import build_features
 from .gates import GATE_REGISTRY
 from .signal import SignalEngine
@@ -337,6 +340,57 @@ def cmd_quote(args) -> int:
     return 0
 
 
+def cmd_probe(args) -> int:
+    """Print predict.fun's real payload shapes so the field guesses can be fixed."""
+    client = PredictFunClient(api_key=args.api_key, testnet=args.testnet)
+    print(probe_predictfun(client, limit=args.limit))
+    return 0
+
+
+def cmd_live(args) -> int:
+    """Price the currently open predict.fun window against the latest bar."""
+    import time
+
+    from .features import build_features
+    from .risk import RiskManager
+    from .signal import SignalEngine
+
+    cfg = _build_config(args)
+    rules = VENUES[args.venue or cfg.venue]
+    client = PredictFunClient(api_key=args.api_key, testnet=args.testnet)
+
+    market = client.current_btc_window()
+    if market is None:
+        raise SystemExit(
+            "no five-minute BTC window is open right now. Run `btc5m probe` to "
+            "check what the API is returning and whether the field names match.")
+
+    series = _load_series(args)
+    _warn_if_synthetic(args)
+    fs = build_features(series, cfg, _load_reference(args))
+    engine = SignalEngine(cfg)
+    index = len(series) - 1
+    if index < engine.warmup_bars(fs):
+        raise SystemExit("not enough history: the last bar is inside the warm-up")
+
+    now = int(time.time())
+    quote = market.to_quote(observed_ts=now, rules=rules)
+    signal = engine.evaluate(fs, index, now_ts=now)
+    risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
+    decision = evaluate_market(signal, quote, cfg, risk=risk, rules=rules,
+                               atr_rank=float(fs.values["atr_rank"][index]))
+
+    if args.brief:
+        print(decision.brief())
+        return 0
+    print(f"market   {market.title}  ({market.market_id})")
+    print(f"bars     {series.symbol} through "
+          f"{series.time_at(index):%Y-%m-%d %H:%M} UTC")
+    print()
+    print(decision.report())
+    return 0
+
+
 def cmd_fetch(args) -> int:
     series = fetch_klines(args.exchange, args.symbol, args.limit)
     path = series.write_csv(args.out)
@@ -445,6 +499,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_quote)
 
+    p = sub.add_parser("probe", help="show predict.fun's real API payload shapes")
+    p.add_argument("--testnet", action="store_true",
+                   help="use api-testnet.predict.fun, which needs no API key")
+    p.add_argument("--api-key", help="mainnet key; also read from PREDICT_FUN_API_KEY")
+    p.add_argument("--limit", type=int, default=3)
+    p.set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("live", help="price the open predict.fun window")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--testnet", action="store_true",
+                   help="use api-testnet.predict.fun, which needs no API key")
+    p.add_argument("--api-key", help="mainnet key; also read from PREDICT_FUN_API_KEY")
+    p.add_argument("--venue", choices=sorted(VENUES), default=None)
+    p.add_argument("--brief", action="store_true",
+                   help="one line: the answer and, if no, the reason")
+    p.set_defaults(func=cmd_live)
+
     p = sub.add_parser("fetch", help="download closed 5m candles to CSV")
     p.add_argument("--exchange", default="binance",
                    choices=("binance", "coinbase", "kraken"))
@@ -472,7 +544,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (ValueError, KeyError, RuntimeError, FileNotFoundError) as exc:
+    except (ValueError, KeyError, RuntimeError, FileNotFoundError,
+            PredictFunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
