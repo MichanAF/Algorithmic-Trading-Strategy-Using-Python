@@ -690,6 +690,25 @@ before a wallet is connected. Everything after that (`checkApprovals`,
 wallet fails at the last step of a five-minute window, which is the worst place
 to discover it.
 
+What gets approved: ERC-1155 (`ConditionalTokens`) and ERC-20 (`USDT`), against
+both `CTF_EXCHANGE` and `NEG_RISK_CTF_EXCHANGE`. The signing wallet **must be
+the order's `maker`**.
+
+### Set the RPC polling interval, or lose four seconds a transaction
+
+ethers defaults `provider.pollingInterval` to **4000ms**, so every internal
+`tx.wait()` can take up to four seconds to notice a transaction that already
+mined. Against a 45-second entry window on a chain with ~3-second blocks, that
+is most of the budget spent waiting for a poll.
+
+```js
+provider.pollingInterval = 300;   // BNB is fast enough to justify it
+```
+
+Set it on whatever provider you pass in, browser wallets included. Combined with
+predict.fun's Tokyo servers this is the difference between comfortably inside
+the window and missing it.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
