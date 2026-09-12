@@ -661,6 +661,29 @@ them directly.
 **Keep the key out of this repository.** Read-side calls need only the API key,
 and nothing here asks for more than that.
 
+### One-time setup: token approvals
+
+Before any order will go through, the wallet has to approve the protocol's
+contracts on-chain. Their SDK does it:
+
+```
+getApprovalSteps({operation: "TRADE", isNegRisk, isYieldBearing})  # or getAllApprovalSteps()
+runApprovals(steps, {skipSatisfied: true, stopOnError: true, onProgress})
+```
+
+Each step reports `checking -> skipped | submitting -> confirmed | failed`, and
+the result is `{success, steps}`. `skipSatisfied` means re-running is cheap: it
+pre-checks on-chain and sends nothing for approvals already in place.
+
+Two things worth knowing. `getApprovalSteps` and `getAllApprovalSteps` do not
+touch the chain, so they run without a signer and can render the checklist
+before a wallet is connected. Everything after that (`checkApprovals`,
+`setApproval`, `runApprovals`) needs one.
+
+**Do this once, manually, before wiring anything automated.** An unapproved
+wallet fails at the last step of a five-minute window, which is the worst place
+to discover it.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
