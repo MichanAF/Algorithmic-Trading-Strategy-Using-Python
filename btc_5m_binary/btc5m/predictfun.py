@@ -56,7 +56,14 @@ _FIELDS: dict[str, tuple[str, ...]] = {
     "outcome_token": ("tokenId", "token_id", "id", "assetId"),
     "outcome_price": ("price", "lastPrice", "midPrice", "impliedProbability"),
     "fee_bps": ("feeRateBps", "fee_rate_bps", "feeBps"),
+    # Needed later by the SDK's order builder, so capture them now.
+    "neg_risk": ("isNegRisk", "is_neg_risk", "negRisk"),
+    "yield_bearing": ("isYieldBearing", "is_yield_bearing", "yieldBearing"),
 }
+
+# The docs write the markets endpoint both ways. Try the versioned path first
+# and fall back, rather than making the caller guess.
+MARKET_PATHS = ("/v1/markets", "/markets")
 
 
 class PredictFunError(RuntimeError):
@@ -117,6 +124,9 @@ class PredictMarket:
     ends_at: int | None
     up_price: float | None
     down_price: float | None
+    # The SDK's order builder needs both of these to build approvals and orders.
+    is_neg_risk: bool | None = None
+    is_yield_bearing: bool | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -164,12 +174,18 @@ class PredictMarket:
             up = 1.0 - down
         if down is None and up is not None:
             down = 1.0 - up
+        def flag(key: str) -> bool | None:
+            value = _first(payload, key)
+            return None if value is None else bool(value)
+
         return cls(
             market_id=str(_first(payload, "id") or ""),
             title=str(_first(payload, "title") or _first(payload, "slug") or ""),
             starts_at=_as_epoch(_first(payload, "start")),
             ends_at=_as_epoch(_first(payload, "end")),
-            up_price=up, down_price=down, raw=payload,
+            up_price=up, down_price=down,
+            is_neg_risk=flag("neg_risk"), is_yield_bearing=flag("yield_bearing"),
+            raw=payload,
         )
 
 
@@ -240,9 +256,21 @@ class PredictFunClient:
     def markets(self, variant: str | None = CRYPTO_UP_DOWN,
                 status: str | None = "ACTIVE", first: int = 50,
                 after: str | None = None) -> list[PredictMarket]:
-        payload = self._get("/v1/markets", marketVariant=variant, status=status,
-                            first=first, after=after)
+        payload = self._get_markets(marketVariant=variant, status=status,
+                                    first=first, after=after)
         return [PredictMarket.from_payload(item) for item in self._items(payload)]
+
+    def _get_markets(self, **params) -> Any:
+        """Try each documented spelling of the markets path."""
+        last: PredictFunError | None = None
+        for path in MARKET_PATHS:
+            try:
+                return self._get(path, **params)
+            except PredictFunError as exc:
+                if "404" not in str(exc):
+                    raise
+                last = exc
+        raise last or PredictFunError("no markets endpoint responded")
 
     def orderbook(self, market_id: str) -> dict:
         return self._get(f"/v1/orderbook/{market_id}")

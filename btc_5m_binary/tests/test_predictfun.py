@@ -195,3 +195,45 @@ def test_probe_shows_a_parsed_market_when_the_fields_do_match(monkeypatch):
     assert "UNMATCHED" not in text
     assert "300s" in text
     assert "UP 0.49" in text
+
+
+def test_market_flags_the_order_builder_needs_are_captured():
+    """isNegRisk and isYieldBearing come from GET /markets and gate approvals."""
+    m = PredictMarket.from_payload(payload(isNegRisk=False, isYieldBearing=True))
+    assert m.is_neg_risk is False
+    assert m.is_yield_bearing is True
+    absent = PredictMarket.from_payload(payload())
+    assert absent.is_neg_risk is None      # unknown, not assumed false
+
+
+def test_the_markets_path_falls_back_when_the_versioned_one_is_absent():
+    """The docs write it both as /v1/markets and /markets."""
+    from btc5m.predictfun import MARKET_PATHS
+
+    assert MARKET_PATHS == ("/v1/markets", "/markets")
+    client = PredictFunClient(testnet=True)
+    tried = []
+
+    def fake_get(path, **params):
+        tried.append(path)
+        if path == "/v1/markets":
+            raise PredictFunError("predict.fun returned 404 for /v1/markets")
+        return {"data": [payload()]}
+
+    client._get = fake_get
+    assert len(client.markets()) == 1
+    assert tried == ["/v1/markets", "/markets"]
+
+
+def test_a_non_404_error_is_not_retried_against_the_other_path():
+    client = PredictFunClient(testnet=True)
+    tried = []
+
+    def fake_get(path, **params):
+        tried.append(path)
+        raise PredictFunError("rate limited by predict.fun")
+
+    client._get = fake_get
+    with pytest.raises(PredictFunError, match="rate limited"):
+        client.markets()
+    assert tried == ["/v1/markets"]

@@ -667,9 +667,15 @@ Before any order will go through, the wallet has to approve the protocol's
 contracts on-chain. Their SDK does it:
 
 ```
+setApprovals()                                                    # everything, one call
 getApprovalSteps({operation: "TRADE", isNegRisk, isYieldBearing})  # or getAllApprovalSteps()
 runApprovals(steps, {skipSatisfied: true, stopOnError: true, onProgress})
 ```
+
+`setApprovals()` does the lot in one call and is the simplest path. The scoped
+API is for building an approval UI. `isNegRisk` and `isYieldBearing` describe
+the market and come from `GET /markets`, so `predictfun.py` captures both on
+every market it reads.
 
 Each step reports `checking -> skipped | submitting -> confirmed | failed`, and
 the result is `{success, steps}`. `skipSatisfied` means re-running is cheap: it
