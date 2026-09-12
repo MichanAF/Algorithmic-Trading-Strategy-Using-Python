@@ -1,6 +1,5 @@
 """predict.fun read-side client. Parsing and error paths only: no network."""
 
-import json
 import pytest
 
 from btc5m.predictfun import (CRYPTO_UP_DOWN, MAINNET, TESTNET, PredictFunClient,
