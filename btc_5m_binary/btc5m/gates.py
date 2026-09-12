@@ -204,7 +204,7 @@ class VolatilityRegimeGate(Gate):
     58.2% inside the band, 57.1% above the ceiling, against standard errors near
     2.5% -- so on a contract market the band only discards signals.  Opening it
     up doubled signal frequency (3.8 to 8.0 a day) and slightly *raised*
-    accuracy.  See configs/trustwallet-bnb-5m.json, which leaves this gate out.
+    accuracy.  The venue configs leave this gate out entirely.
 
     Extreme volatility is still worth standing down for, but that is a tail
     guard and belongs in the risk layer, as ``risk.atr_shock_rank``.
