@@ -101,6 +101,11 @@ class RiskManager:
         self.cooldown_until_bar = -1
         self.halted = False
         self.halt_reason = ""
+        # Tracked separately from the drawdown halt. Folding two stop conditions
+        # into one flag makes both of them fail together and neither of them
+        # mean anything on its own.
+        self.health_halted = False
+        self.health_halt_reason = ""
 
         self.open_bets: list[OpenBet] = []
         self.settled: list[SettledBet] = []
@@ -246,7 +251,19 @@ class RiskManager:
     # -- condition 3: strategy health ----------------------------------- #
 
     def _health_condition(self, atr_rank: float | None) -> tuple[Check, float]:
-        """Returns the condition plus a stake multiplier (1.0, or the derate)."""
+        """Returns the condition plus a stake multiplier (1.0, or the derate).
+
+        ``halt_when_unhealthy`` is a deliberate stop-and-review, and it is
+        **sticky**: once tripped it stays tripped until someone resets it.  That
+        is not a detail to leave implicit, because the rolling hit rate can only
+        improve by placing more bets, so a halt that silently re-evaluated every
+        bar would lock the strategy out forever while looking like an ordinary
+        refusal.  Sticky and named is honest; silently permanent is a bug.
+
+        Leave the flag off (the default) and an unhealthy stretch derates the
+        stake instead.  Size falls, the rolling window keeps refreshing, and the
+        strategy can recover on its own.
+        """
         c = self.cfg
         hit = self.rolling_hit_rate()
         floor = self.break_even - c.hit_rate_buffer
@@ -254,9 +271,16 @@ class RiskManager:
         parts: list[str] = []
 
         healthy = True
+        if self.health_halted:
+            return Check("strategy_health", False,
+                         f"halted: {self.health_halt_reason}. This does not clear "
+                         f"on its own -- reset the manager once you have decided "
+                         f"the edge is back"), 1.0
+
+        graded = len([o for o in self.recent_outcomes if o >= 0])
         if hit is None:
-            parts.append(f"hit rate: only {len([o for o in self.recent_outcomes if o >= 0])} "
-                         f"graded bet(s), need {c.health_min_samples} to judge")
+            parts.append(f"hit rate: only {graded} graded bet(s), need "
+                         f"{c.health_min_samples} to judge")
         else:
             parts.append(f"rolling hit rate {hit:.1%} vs floor {floor:.1%} "
                          f"(break-even {self.break_even:.1%} "
@@ -264,6 +288,11 @@ class RiskManager:
             if hit < floor:
                 if c.halt_when_unhealthy:
                     healthy = False
+                    self.health_halted = True
+                    self.health_halt_reason = (
+                        f"rolling hit rate {hit:.1%} over {graded} bet(s) fell "
+                        f"below the {floor:.1%} floor")
+                    parts.append("halting: halt_when_unhealthy is set")
                 else:
                     derate = c.unhealthy_stake_derate
                     parts.append(f"derating stake to {derate:.0%}")

@@ -8,11 +8,15 @@ from btc5m.config import (DEFAULT_GATE_STACK, config_from_dict, load_config,
                           to_dict)
 
 
-def test_defaults_are_valid_and_five_gates_deep():
+def test_defaults_are_three_gates_one_per_distinct_question():
+    """Is the input real, which way, and does "which way" mean anything."""
     cfg = config_from_dict()
     cfg.validate()
     assert cfg.gate_stack == list(DEFAULT_GATE_STACK)
-    assert len(cfg.gate_stack) == 5
+    assert cfg.gate_stack == ["data_integrity", "trend_alignment", "persistence"]
+    from btc5m.gates import GATE_REGISTRY
+    kinds = [GATE_REGISTRY[g].kind for g in cfg.gate_stack]
+    assert kinds == ["veto", "directional", "directional"]
 
 
 def test_overrides_merge_without_clobbering_siblings():
@@ -146,6 +150,27 @@ def test_binding_condition_flips_when_the_payout_worsens():
 # --------------------------------------------------------------------------- #
 # serialisation
 # --------------------------------------------------------------------------- #
+
+def test_a_stake_cap_below_the_minimum_stake_is_rejected():
+    """That config could never place a single bet."""
+    with pytest.raises(ValueError, match="no bet could ever be placed"):
+        config_from_dict({"risk": {"starting_bankroll": 1000.0,
+                                   "max_stake_pct": 0.002, "min_stake": 50.0}})
+
+
+def test_a_stake_cap_sitting_on_the_minimum_is_rejected():
+    """The silent lock-up: one loss drops the cap under the floor, for good."""
+    with pytest.raises(ValueError, match="at least 1.5x headroom"):
+        config_from_dict({"risk": {"starting_bankroll": 1000.0,
+                                   "max_stake_pct": 0.01, "min_stake": 8.0}})
+
+
+def test_a_stake_cap_with_headroom_is_accepted():
+    cfg = config_from_dict({"risk": {"starting_bankroll": 1000.0,
+                                     "max_stake_pct": 0.01, "min_stake": 5.0}})
+    ceiling = cfg.risk.starting_bankroll * cfg.risk.max_stake_pct
+    assert ceiling >= cfg.risk.min_stake * 1.5
+
 
 def test_round_trips_through_a_dict():
     original = config_from_dict({"betting": {"net_payout": 0.93},

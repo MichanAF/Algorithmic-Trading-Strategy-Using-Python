@@ -295,7 +295,8 @@ def cmd_quote(args) -> int:
     from .signal import SignalEngine
 
     cfg = _build_config(args)
-    rules = VENUES[args.venue]
+    # The config declares its venue; --venue overrides it explicitly.
+    rules = VENUES[args.venue or cfg.venue]
     series = _load_series(args)
     _warn_if_synthetic(args)
     fs = build_features(series, cfg, _load_reference(args))
@@ -437,7 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seconds elapsed since the window opened (default: 5)")
     p.add_argument("--overround", type=float, default=0.0,
                    help="how much the two sides cost above 1.00 together")
-    p.add_argument("--venue", choices=sorted(VENUES), default="trust-wallet-btc-up-down-5m")
+    p.add_argument("--venue", choices=sorted(VENUES), default=None,
+                   help="override the venue declared by the config")
     p.add_argument("--bar", type=int, help="bar index (default: the last one)")
     p.add_argument("--brief", action="store_true",
                    help="one line: the answer and, if no, the reason")

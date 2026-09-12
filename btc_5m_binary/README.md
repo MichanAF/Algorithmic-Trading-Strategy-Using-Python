@@ -84,7 +84,7 @@ print(signal.report())          # every gate, every check, then the verdict
 
 ---
 
-## The gate stack
+## The gate stack: three gates, three different questions
 
 Gates come in three kinds, and they run in this order:
 
@@ -94,32 +94,28 @@ Gates come in three kinds, and they run in this order:
 3. **Confirmation gates** are told the side the directional gates chose and may
    only veto it, never propose their own.
 
-That third kind exists because of a mistake worth repeating. The location gate
-originally voted for whichever side had more room before the nearest swing
-level. It tested at 44% accuracy, because "more room below" is a mean-reversion
-opinion, and it spent its time fighting the trend gates. "Do not buy into
-resistance" is a veto on a long, not a reason to go short.
+The default stack is **three gates**, one per genuinely distinct question:
 
-The **default stack is five gates**, two vetoes and three directional:
-
-| # | Gate | Kind | The question it answers |
+| Gate | Kind | The question | Why this one |
 |---|---|---|---|
-| 1 | `data_integrity` | veto | Is the feed trustworthy? No gapped bar, stuck price, blown-out spread or zero-volume bar. |
-| 2 | `volatility_regime` | veto | Is there enough movement to pay for the spread, without being chaos? ATR percentile inside a band, and above a floor in basis points. **Drop this one on a yes/no contract** — see below. |
-| 3 | `trend_alignment` | directional | Which way, and does the 15-minute chart agree? EMA stack, higher-timeframe slope, regression fit, VWAP side. |
-| 4 | `persistence` | directional | Does this regime extend moves or reverse them? Variance ratio above 1, ADX above a floor, +DI vs -DI for the side. |
-| 5 | `participation` | directional | Is real volume behind it? Above median, below blow-off, with on-balance-volume agreeing. |
+| `data_integrity` | veto | Is the input real? | A gapped bar, stuck price or blown spread turns the bet into a coin flip at worse odds. Costs nothing to check. |
+| `trend_alignment` | directional | Which way? | The only gate whose removal drops the stack below break-even. Strongest on its own (53.5%, z = +4.3) and in combination (+3.5 points marginal, z = +4.1). |
+| `persistence` | directional | Does "which way" mean anything right now? | Five-minute BTC returns are mildly negatively autocorrelated, so following a trend only pays in the subset of time when moves extend. The variance ratio is that test. +2.2 points marginal, z = +3.1. |
 
-Note what is **not** in the default stack: `momentum_thrust`, the obvious
-"is it moving right now" gate. On the test data its vote is anti-predictive over
-the very next bar, because 5-minute BTC returns are mildly negatively
-autocorrelated: a sharp three-bar push is more often followed by a give-back
-than a continuation. `persistence` earns the slot instead by asking whether
-momentum is the right tool at all before anyone follows anything.
+Both directional gates earn their place: `btc5m overlap` confirms each still
+separates winners from losers once the other has agreed. Nothing in this stack
+is dead weight, which is the point of picking three rather than five.
 
-Keep it. Do not take it on faith. Measure it on your own data.
+Every gate reports its own sub-checks, so a refused bar names the exact
+condition that stopped it rather than reporting a bare verdict.
 
----
+**One honest caveat.** `trend_alignment` and `persistence` fire on largely
+independent bars (phi +0.06) but agree on *direction* 98% of the time. So read
+this stack as one direction opinion plus one regime filter plus one integrity
+check — not as two independent votes on which way. If you would rather that be
+explicit, swap `persistence` for the `regime` gate, which runs the same variance
+ratio and ADX test as a veto with no direction vote. It measured equal
+(55.8% vs 56.3% out of sample, within noise).
 
 ## The gate menu: what you can factor for
 
@@ -320,63 +316,71 @@ notional rather than the live bankroll, if you want different behaviour.
 
 ---
 
-## Choosing a stack: measure, do not guess
+## Cherry-picking three gates
 
-`btc5m compare` scores candidate stacks on the same data. On the bundled test
-fixture, 120,000 bars (417 days):
+Ten viable three-gate combinations, scored on 1,042 days never used for
+selection. `EV/day` is expected profit per day in units of one stake at a 0.50
+quote — the objective that matters, because accuracy alone does not pay:
 
-| Stack | Gates | Signals/day | Accuracy | vs break-even | z |
-|---|---|---|---|---|---|
-| **default** (trend + persistence + participation) | 5 | 3.62 | **59.80%** | **+7.17%** | **+5.7** |
-| trend6-session (adds the session veto) | 6 | 3.55 | 59.84% | +7.21% | +5.7 |
-| core3 (trend alignment only) | 3 | 55.98 | 54.06% | +1.43% | +4.4 |
-| thrust (momentum instead of persistence) | 5 | 2.24 | 49.84% | -2.79% | -1.7 |
-| meanrev | 3 | 0.43 | 51.38% | -1.25% | -0.3 |
-| everything | 7 | 0.00 | n/a | n/a | 1 signal in 417 days |
+| Three-gate stack | Signals/day | Accuracy | EV/day | Survives a price up to |
+|---|---|---|---|---|
+| **integrity + trend + persistence** | 44.8 | **56.28%** | **5.64** | 0.56 |
+| integrity + regime + trend | 48.7 | 55.77% | 5.62 | 0.56 |
+| session + trend + persistence | 43.9 | 56.32% | 5.55 | 0.56 |
+| integrity + regime + persistence | 44.6 | 55.19% | 4.63 | 0.55 |
+| integrity + trend + location | 43.3 | 53.14% | 2.72 | 0.53 |
+| volatility + trend + persistence | 21.8 | 56.09% | 2.65 | 0.56 |
+| integrity + trend + participation | 15.0 | 55.24% | 1.57 | 0.55 |
+| regime + trend + participation | 7.3 | 57.36% | 1.07 | 0.57 |
+| integrity + persist + participation | 7.5 | 53.68% | 0.55 | 0.54 |
+| integrity + trend + thrust | 9.4 | 50.84% | 0.16 | 0.51 |
 
-Three lessons, and they are the reason the tool exists:
+The pick was made from purpose first — integrity, direction, regime — and the
+measurement agreed. The top two are a statistical tie, so the tiebreak is
+design: `persistence` keeps a +DI/-DI agreement filter that `regime` drops.
 
-**More gates is not better.** The seven-gate `everything` stack fires twice in
-417 days. A stack that cannot produce a sample cannot prove anything, and it
-cannot be traded. This is why the config validator caps a stack at seven and
-targets 3-5.
+### What is deliberately left out
 
-**Fewer is not better either.** `core3` fires 30 times a day but its edge is
-thin. Selectivity is the product.
+| Gate | Why not |
+|---|---|
+| `volatility_regime` | Its floor assumes a spread you cross. A yes/no contract crosses none — any non-zero move resolves it. Accuracy is flat across the whole volatility range. |
+| `participation` | Its verdict adds no information once the other two agree (z = +1.9). Costs 80% of signals for ~1.5 points. |
+| `momentum_thrust` | Anti-predictive over the very next bar (z = −8.2). A sharp three-bar push is more often followed by a give-back. |
+| `location` | Harmful as a voter on a trend stack; a trending market is supposed to be near its recent extreme. |
+| `session` | Roughly free, but spends a slot on a veto with no directional content. Add it as a fourth if you trade through funding times. |
+| `mean_reversion` | Contradicts `persistence` by construction, and unproven on its own. |
+| `cross_asset` | Needs a second series wired up. Worth testing if you have ETH data. |
 
-**A gate can be worth more in combination than alone.** `participation` scores
-about 49.6% on its own vote, below a coin flip. Adding it to
-`trend_alignment + persistence` still improved the stack by roughly two points.
-It is a good filter and a bad predictor. `btc5m gates` finds the predictors;
-only `btc5m compare` finds the filters.
+### Frequency is set by conviction, not by gate count
 
-Per-gate votes on the same data:
+Three gates fire *often* — 44.8 times a day at the default floor. With the gate
+count fixed, `min_conviction` is the throttle:
 
-| Gate | Signals/day | Accuracy | vs break-even | z | Verdict |
-|---|---|---|---|---|---|
-| `trend_alignment` | 156.2 | 53.47% | +0.84% | +4.3 | edge, significant |
-| `persistence` | 101.6 | 53.14% | +0.51% | +2.1 | edge, significant |
-| `location` (confirm) | 0.1 | 59.65% | +7.02% | +1.1 | too few to judge |
-| `participation` | 82.4 | 49.79% | -2.84% | -10.5 | negative, significant |
-| `momentum_thrust` | 44.7 | 49.63% | -3.00% | -8.2 | negative, significant |
-| `mean_reversion` | 3.0 | 45.03% | -7.60% | -5.4 | negative, significant |
-| `cross_asset` | 0.0 | n/a | n/a | n/a | needs `--reference` |
+| `min_conviction` | Signals/day | Accuracy | EV/day | Stake for 4%/day risk |
+|---|---|---|---|---|
+| 0.00 | 54.9 | 55.51% | 6.06 | 0.073% |
+| 0.60 | 44.8 | 56.28% | 5.64 | 0.089% |
+| 0.70 | 36.3 | 57.03% | 5.11 | 0.110% |
+| 0.80 | 22.9 | 58.07% | 3.69 | 0.175% |
+| 0.85 | 16.2 | 58.87% | 2.88 | 0.247% |
+| 0.90 | 10.9 | 59.73% | 2.11 | 0.369% |
 
-Note how small the individual edges are. The two gates that work contribute
-under a point each on their own. The stack's +7.17% comes from requiring them to
-agree, not from any one of them being clever.
+Raw expected value is highest at the *lowest* floor. Two things push back:
 
-Read `z` before `accuracy`. It is how many standard errors the hit rate sits
-above break-even. Under +2, the gate has shown you nothing yet.
+**Fixed costs per bet.** On a gas-charging chain, halving the bet count halves
+the gas bill, so fewer-and-better beats more-and-cheaper. This is why the
+predict.fun config runs a 0.85 floor and the Polymarket config runs 0.70 —
+Polymarket has no gas and a proportional fee, so frequency is nearly free there.
 
----
+**Venue minimum orders.** Higher accuracy means a bigger per-bet stake for the
+same daily risk, which is what clears a 5 USDC minimum on a smaller bankroll.
 
 ## Overlap analysis: are the gates asking different questions?
 
-A stack of five gates is only as selective as the number of **independent**
-questions it asks. Two gates that fire together for the same underlying reason
-do not double the evidence. They halve the signal count while adding nothing,
-and make the stack look more confirmed than it is.
+A stack is only as selective as the number of **independent** questions it asks.
+Two gates that fire together for the same underlying reason do not double the
+evidence. They halve the signal count while adding nothing, and make the stack
+look more confirmed than it is.
 
 ```bash
 python -m btc5m overlap --data btc_5m.csv
@@ -391,52 +395,52 @@ Four measurements, weakest to strongest. The third is the one that decides.
 | **Marginal value** | Among bars where every *other* gate already agreed, does this gate's verdict still separate winners from losers? |
 | **Leave-one-out** | What the whole stack does without each gate. |
 
-### What it found, and what changed as a result
+On the three-gate stack:
+
+| Gate | Marginal separation | z | Verdict |
+|---|---|---|---|
+| `trend_alignment` | +3.49% | +4.1 | adds information |
+| `persistence` | +2.20% | +3.1 | adds information |
+
+Feature sets are disjoint, and both gates still pay once the other has agreed.
+That is what cherry-picking is supposed to produce. It is also why the stack
+stops at three: the audit found nothing left to cut.
+
+### What the audit found on the way here, and what changed
 
 | Overlap | Finding | Action |
 |---|---|---|
-| Gate inputs | The five default gates read **disjoint** feature sets | none needed |
-| `trend_alignment` vs `persistence` | Independent on *when* they fire (phi +0.07) but **99% agreement on direction** | documented: read this stack as two direction votes plus one regime filter, not three votes |
-| `participation` marginal value | **+1.5 points, z = +1.9** — no information once the others agreed | added the `trend4` preset without it |
-| Betting conditions 1 and 2 | `priced_edge` **never binds** at default settings | added `effective_conviction_floor()`; the report now names the single real threshold |
-| Betting condition 3 | `timing` is **not testable** on historical bars | reported as such rather than counted as passing |
-| Kelly vs stake cap | The cap binds at **every** allowed conviction, so `kelly_fraction` never sizes a bet | the stake check now names which half bound |
-| `daily_loss_limit` vs `max_drawdown` | The halt flag made **both** fail together, double-counting every post-halt bar | fixed: the halt belongs to `max_drawdown` alone |
-| Conviction vs outcome | **Non-monotone**: the top bucket is the worst | documented below; do not trust `prob_cap` |
+| `trend_alignment` vs `persistence` | Independent on *when* they fire (phi +0.06) but **98% agreement on direction** | Documented: one direction opinion plus one regime filter, not two votes. `regime` exists as the explicit single-vote alternative. |
+| `participation` marginal value | **z = +1.9** — no information once the others agreed | Cut from the stack. |
+| `volatility_regime` | Accuracy flat across its whole band on a contract bet | Cut. Its floor assumes a spread this bet never crosses. |
+| Betting conditions 1 and 2 | `priced_edge` **never binds** at the default payout | `effective_conviction_floor()` names the single real threshold. |
+| Betting condition 3 | `timing` is **not testable** on historical bars | Reported as such rather than counted as passing. |
+| Kelly vs stake cap | The cap binds at every conviction, so `kelly_fraction` never sizes a bet | The stake check now names which half bound. |
+| `daily_loss_limit` vs `max_drawdown` | The halt flag made **both** fail together | Fixed: the halt belongs to `max_drawdown` alone. |
 
-Two of these deserve spelling out.
+### Two bugs the venue work exposed
 
-**Betting conditions 1 and 2 are one condition.** Both are thresholds on the
-same scalar, because `p_model` is a monotone function of conviction. At the
-default 1.90x payout the edge requirement is satisfied from conviction 0.402
-upward, while the conviction floor already demands 0.600 — so condition 2 can
-never be the reason a bet is refused. They are still both worth keeping, because
-**which one binds moves with the payout**: below about 1.83x the edge requirement
-takes over and becomes the tighter test. But nobody should read them as two
-independent safeguards. The report now prints the single effective floor.
+Both were mine, both silent, and both would have cost real money:
 
-**`participation` does not earn its slot.** Its directional verdict adds nothing
-once the other gates agree, and it removes about 80% of the remaining signals to
-buy roughly 1.5 points of accuracy. Sized so each stack risks the same fraction
-of bankroll per day, over the same year:
+**The health halt deadlocked.** `halt_when_unhealthy` stopped betting when the
+rolling hit rate dipped — but the rolling hit rate can only improve by placing
+more bets, so it locked out permanently while each refusal read like an ordinary
+risk decision. It blocked 95% of signals in a run that looked like it was
+working. The halt is now sticky *and named*, so it shows up as HALTED instead of
+hiding; the venue configs use the derate path, where size falls and the
+measurement keeps refreshing.
 
-| Stack | Per-bet stake | Bets/day | Hit rate | Max drawdown | Sharpe |
-|---|---|---|---|---|---|
-| 5 gates (default) | 1.05% | 3.7 | 57.47% | 15.85% | 3.61 |
-| **4 gates, no `participation`** | 0.18% | 18.5 | 56.36% | **6.95%** | **6.18** |
-| 3 gates (`core3`) | 0.07% | 43.7 | 54.21% | 5.14% | 4.01 |
-
-Same answer when each stack is sized at its own quarter-Kelly instead. The
-`trend4` preset is that four-gate stack. The default is left as it is because
-this is one synthetic fixture and the finding sits close to the significance
-bar — but measure it on your own data before keeping the fifth gate.
+**A stake cap sitting on the minimum stake stops the strategy for good.** Set
+`max_stake_pct × bankroll` equal to `min_stake` and the first loss drops the cap
+below the floor, after which every bet is refused forever. The first
+predict.fun config did exactly this and placed **one bet in a year**. The
+validator now rejects any config without 1.5x headroom, and says what to change.
 
 ### The trap this analysis walked into first
 
 Comparing stacks by accuracy alone reverses the answer, and so does comparing
-them by raw profit. At a **fixed** 2% stake, the loose stacks all hit the 20%
-drawdown halt within days, because 43 bets a day at 2% risks most of the
-bankroll daily. The first comparison run looked like this:
+them by raw profit. At a **fixed** stake, loose stacks all trip the drawdown
+halt within days, because 43 bets a day at 2% risks most of the bankroll daily:
 
 | Stack | Bets placed | Net P&L | Halted on |
 |---|---|---|---|
@@ -444,248 +448,208 @@ bankroll daily. The first comparison run looked like this:
 | 4 gates | 297 | +6,196 | day 24 |
 | 3 gates | 148 | +1,355 | day 9 |
 
-Read at face value that says selectivity wins by a mile. It does not. All three
-tripped the halt, and the looser ones tripped it in the **first few weeks** — so
-those numbers mostly measure how fast each stack hit a risk limit calibrated for
-about four bets a day, not how good the stack is. At 2% a bet, 43 bets a day puts
-most of the bankroll at risk daily; the three-gate stack was finished on day 9.
-
-**Stake and signal frequency have to be varied together.** That is itself an
-overlap, between the betting layer and the risk layer, and it is the most
-expensive one in this repository: it inverts the conclusion.
+Read at face value that says selectivity wins by a mile. It does not — those
+numbers measure how fast each stack hit a risk limit calibrated for four bets a
+day. **Stake and signal frequency have to be varied together.** That is an
+overlap between the betting layer and the risk layer, and it is the most
+expensive one here: it inverts the conclusion.
 
 ### Read `z`, not the headline
 
 The `verdict` column is deliberately conservative. Under 100 joint passes, or
 under 50 bars in either bucket, it reports "too few to judge" rather than a
-number. A gate that looks brilliant on 57 signals in a year has told you
-nothing.
-
----
+number. A gate that looks brilliant on 57 signals in a year has told you nothing.
 
 ## One-year backtest
 
-The default five-gate stack, default risk settings, 105,120 bars (365 days) of
-the bundled fixture at seed 11:
+The three-gate stack with each venue's own risk settings, 105,120 bars
+(365 days) of the bundled fixture at seed 11:
 
-```
-  bars evaluated        104,832
-  tradable signals      1,394
-  bets placed           730 (2.01/day)
-  wins / losses / void  429 / 301 / 0
-  hit rate              58.77% +/- 1.82%
-  break-even needed     52.63% (payout 0.900x)
-  edge vs break-even    +6.14%   [significant at 2 s.e.]
-  net P&L               +36,610.70 (+366.11% on 10,000)
-  max drawdown          20.69%
-  longest loss streak   6
-  annualised Sharpe     3.37
-  HALTED                drawdown 20.69% hit the 20.00% limit
-```
-
-Reproduce with:
-
-```bash
-python -m btc5m backtest --synthetic 105120 --seed 11
-```
-
-**Do not read the +366% as a return forecast.** Three reasons, in order of size:
-the data is synthetic; the stack was selected on this same fixture; and the run
-**halted partway through the year**, so the figure is not even a full year of
-this strategy. The honest numbers from this run are the hit rate against
-break-even, and the two problems below.
-
-### Problem 1: conviction does not predict accuracy
-
-| Conviction bucket | Bets | Claimed | Realised | P&L |
-|---|---|---|---|---|
-| 0.60 - 0.70 | 315 | 59.1% | 58.4% | +9,526 |
-| 0.70 - 0.80 | 230 | 60.4% | **63.9%** | +26,797 |
-| 0.80 - 0.90 | 123 | 61.9% | 56.1% | +2,427 |
-| 0.90 - 1.00 | 62 | 63.3% | **46.8%** | **-2,138** |
-
-The most confident bucket is the **only losing one**, and it is 16 points below
-what the model claimed. The relationship is not weakly calibrated, it is
-non-monotone: past about 0.8, more conviction is worse.
-
-The likely cause is the same one that sank `momentum_thrust`. Maximum conviction
-means every gate is maximally extended at once — steep slope, high ADX, heavy
-volume — and that is a late-stage trend, which reverts. So `prob_cap` is a
-fiction at the top of its range.
-
-It is not currently costing money, for a reason worth noticing: because the
-stake cap binds at every conviction, every bet is the same size, so the strategy
-does **not** bet more on its worst bucket. The 2% cap is quietly doing the job
-`prob_cap` was supposed to do. If you raise the cap so Kelly starts sizing, that
-protection disappears and this miscalibration starts allocating real capital to
-the worst bets. Fix the calibration before touching the cap.
-
-### Problem 2: the drawdown halt is not a year-long setting
-
-The run stopped betting on **day 204 of 365**, having taken the bankroll from
-10,000 to a peak of 58,774 and then given back 20.69% of that peak. The last 160
-days produced 605 signals and not a single bet.
-
-Stakes scale with the bankroll, so on any compounding run a fixed percentage
-drawdown measured from peak equity will eventually fire. That is the control
-working as designed, and resuming should be a person's decision rather than
-something the engine does quietly. But it means **a one-year backtest of this
-config is not a year of trading**. If you want continuous operation, either raise
-`max_drawdown_pct`, or size from a fixed notional rather than the live bankroll.
-
----
-
-## Running against a real venue (Trust Wallet, BNB Smart Chain)
-
-The "Bitcoin Up or Down" five-minute markets settle from the Chainlink BTC/USDT
-top-of-book stream. Their rules map onto this engine exactly:
-
-| Venue rule | What it means here |
-|---|---|
-| Start price is the beginning of the range, end price the close of the last 5m candle in it | **One 5-minute bar's return**, which is `horizon_bars: 1` |
-| Candles labelled by open time, so a market ending 8:20 settles on the 8:15 candle's close | Bar `i` predicts `close[i+1]` vs `close[i]`. Already the model. |
-| Equal prices resolve 50-50 | `tie_policy: void`. At BTC precision this is about 1 bar in 13,000. |
-| Chainlink mid-price from Binance top of book | See "price source" below |
-| Quoted as a percentage | `payout_mode: contract_price` |
-
-```bash
-python -m btc5m quote --data btc_5m.csv --down 51 --into-window 8
-```
-
-`configs/trustwallet-bnb-5m.json` is the matching config. Add `--brief` for a
-single line, which is what you actually want in the seconds after a candle
-closes:
-
-```
-DOWN - buy at 0.490 - stake 15.00 - edge +0.119 - 294s left
-NO BET - market already decided (skew 0.34)
-NO BET - price 0.580 too high for p 0.609
-NO BET - participation: obv_agrees_with_candle
-```
-
-### One gate comes out for this venue
-
-The venue config runs **four** gates, not five: `volatility_regime` is gone.
-Its floor is there to make sure a move clears the spread you cross, and a yes/no
-contract crosses no spread — any non-zero move resolves the bet. Accuracy either
-side of the band is identical (see "The gate menu" above), so the gate was only
-discarding signals. Out of sample:
-
-| Config | Signals/day | Accuracy |
+| | predict.fun | Polymarket |
 |---|---|---|
-| five gates, band as shipped | 3.83 | 58.05% |
-| **four gates, no band** | **8.06** | **58.70%** |
-
-More than twice the signals at slightly better accuracy. The tail guard against
-a volatility shock is unaffected: it lives in `risk.atr_shock_rank`.
-
-The same argument applies to `configs/default.json`, which still ships the band
-because every number quoted elsewhere in this README was measured with it. To
-drop it there too:
+| Conviction floor | 0.85 | 0.70 |
+| Bets placed | 4,259 (11.7/day) | 8,935 (24.5/day) |
+| Hit rate | 58.11% | 56.97% |
+| Break-even to beat | 50.00% | 51.75% (taker fee) |
+| Max drawdown | 4.13% | 2.72% |
+| Annualised Sharpe | 10.73 | 9.96 |
+| Halted | no | no |
 
 ```bash
-python -m btc5m backtest --data btc_5m.csv \
-  --gates data_integrity,trend_alignment,persistence,participation
+python -m btc5m backtest --config configs/predict-fun-bnb-5m.json \
+  --synthetic 105120 --seed 11
 ```
 
-### Break-even is the price you pay
+**The returns those runs produce are not forecasts and are not quoted here.**
+The data is synthetic, the stack was selected on it, and Sharpe near 10 on a
+five-minute coin flip should read as a warning about the fixture, not a
+promise. The transferable numbers are the hit rate against break-even and the
+drawdown, and even those need re-measuring on real history.
 
-This is the whole game on a contract market, and it is harsher than fixed odds.
-Buy a side at 0.84 and you need to be right 84% of the time to break even.
+### Conviction now predicts accuracy, which it did not before
 
-Our probability model is capped at `prob_cap` (0.64), so there is a hard ceiling
-on what it can ever justify buying:
+The five-gate stack had a **non-monotone** calibration: its most confident
+bucket was its only losing one, 16 points below what the model claimed. The
+three-gate stack does not:
 
-| Conviction | p_model | Highest price we can pay |
+| Conviction bucket | Bets | Realised |
 |---|---|---|
-| 0.60 (the floor) | 0.584 | 0.54 |
-| 0.80 | 0.612 | 0.57 |
-| 1.00 (maximum) | 0.640 | 0.60 |
+| 0.70 - 0.78 | 2,647 | 55.7% |
+| 0.78 - 0.85 | 2,842 | 56.4% |
+| 0.85 - 0.93 | 1,747 | 57.0% |
+| 0.93 - 1.00 | 1,699 | 59.8% |
 
-**We can never buy a side priced above about 0.60.** In the screenshot, DOWN at
-84% is untouchable and always will be. That is not a limitation to tune away: a
-model that claims 85% confidence in a five-minute BTC direction is lying.
+Monotone and rising. The likely reason the old stack inverted: with five gates,
+maximum conviction meant every gate maximally extended at once, which is a
+late-stage trend. Fewer gates, less of that artefact.
 
-### The window clock is the part that will cost you money
+Check this table on your own data before trusting `prob_cap`. If realised
+accuracy does not rise with conviction, the conviction score is noise.
 
-These markets trade continuously across the five-minute window, so the quote
-drifts from roughly 50/50 at the open toward the realised answer at the close.
-The screenshot is a market 253 seconds in, with 47 seconds left, sitting at
-84/16. That is not an opportunity. It is the market telling you the move already
-happened while your signal went stale.
+## Which venue: predict.fun, Polymarket, or Hyperliquid
 
-Our edge exists at **one moment**: the bar close that opens the window, when the
-quote is still near even and the next five minutes are genuinely unknown. So the
-venue layer adds three vetoes on top of the normal betting conditions:
+Checked September 2026. **Verify before committing money** — these are
+fast-moving products and the fee and resolution details are what decide whether
+an edge survives.
+
+| | predict.fun | Polymarket | Hyperliquid |
+|---|---|---|---|
+| 5-minute BTC up/down? | **yes** | **yes** | **no** |
+| Horizon | 5 min | 5 min | daily, settles 06:00 UTC |
+| Shape | up/down from window open | up/down from window open | above a **strike** |
+| Chain | BNB Smart Chain | Polygon | Hyperliquid L1 |
+| Collateral | USDT | USDC | USDH |
+| Settles from | Chainlink BTC/USDT top-of-book mid | Chainlink BTC/USD | HyperCore mark price |
+| Exact tie | pays 0.50 to both sides | resolves **Up** (`>=`) | n/a |
+| Taker fee | not publicly documented | `shares × 0.07 × p × (1−p)` | zero (initial testing) |
+| Maker fee | not publicly documented | **zero** | zero |
+| Min order | not documented | 5 USDC | n/a |
+| Per-bet gas | yes, BNB Chain | none (off-chain CLOB) | none |
+| API | `api.predict.fun`, `x-api-key`, Python and TS SDKs | Gamma + CLOB + WebSocket | Python SDK |
+
+**Hyperliquid is the wrong shape.** HIP-4 outcome markets launched on mainnet in
+May 2026, but the recurring BTC binary is *daily* and asks whether the mark
+price clears a **strike** at 06:00 UTC. That is a dated option, not a coin-flip
+direction bet, and nothing in this repository models it. Fees are currently zero,
+which is attractive — but you would be writing a different strategy.
+
+**The market in Trust Wallet already is predict.fun.** Trust Wallet's
+Predictions tab and Binance Wallet's prediction markets both surface predict.fun
+on BNB Chain, so there is no integration to choose between: it is the venue
+you are already on, and it has a documented API.
+
+**Polymarket's fee is the detail that matters.** `0.07 × p × (1−p)` per share
+peaks at `p = 0.5` — exactly where a five-minute direction strategy wants to
+trade. At a 0.50 quote that is 1.75 cents a share, 3.5% of notional, on every
+bet:
+
+| Quote | Fee per share | Effective price | Fee as % of notional |
+|---|---|---|---|
+| 0.30 | 0.0147 | 0.3147 | 4.90% |
+| 0.45 | 0.0173 | 0.4673 | 3.85% |
+| **0.50** | **0.0175** | **0.5175** | **3.50%** |
+| 0.60 | 0.0168 | 0.6168 | 2.80% |
+
+The **maker fee is zero**. Posting a limit order instead of taking removes the
+cost entirely, and that is the single biggest execution lever on this venue —
+paid for in fill risk, which a 45-second entry window makes real.
+
+### Which is cheaper depends on your stake
+
+Gas is fixed per bet; a proportional fee is not. At a 56.28% hit rate and a 0.50
+quote, profit per bet:
+
+| Stake | predict.fun (taker + $0.30 gas) | Polymarket taker | Polymarket maker |
+|---|---|---|---|
+| $5 | +0.33 | +0.44 | +0.63 |
+| $10 | +0.96 | +0.88 | +1.26 |
+| $20 | +2.21 | +1.75 | +2.51 |
+| $100 | +12.26 | +8.75 | +12.56 |
+
+**Below about an $8 stake Polymarket's fee beats BNB gas; above it predict.fun
+wins.** Polymarket as a maker beats both at every size. All of this assumes
+predict.fun charges no trading fee, which is the one number I could not verify —
+measure a real fill and set `fee_bps`.
+
+### Bankroll, because 3 gates fire often
+
+Holding total daily risk to 4% of bankroll:
+
+| Config | Bets/day | Stake | Needs a bankroll of |
+|---|---|---|---|
+| predict.fun, floor 0.85 | 16.2 | 0.25% | ~$5,000 |
+| Polymarket, floor 0.70 | 36.3 | 0.11% | ~$12,000 |
+
+Polymarket's 5 USDC minimum is the binding constraint: 0.11% of bankroll has to
+clear it with headroom. Run it on much less and the stake cap lands on the
+minimum, which stops the strategy on the first loss — the validator now refuses
+that config rather than letting you discover it in a month.
+
+### The window clock will cost you money before the fees do
+
+All three venues trade continuously across the window, so the quote drifts from
+roughly even at the open toward the realised answer at the close. A market 253
+seconds in sitting at 84/16 is not an opportunity; it is the market telling you
+the move already happened while your signal went stale.
+
+Our edge exists at **one moment**: the bar close that opens the window. Three
+vetoes enforce that:
 
 | Veto | Default | Why |
 |---|---|---|
 | `entry_window` | within 45s of the open | After that, part of the move you are betting on is already history |
-| `time_to_expiry` | at least 60s left | Below that you are betting on the tail of the window, not the window |
+| `time_to_expiry` | at least 60s left | Below that you are betting on the tail of the window |
 | `market_not_decided` | quote skew ≤ 0.12 | A lopsided quote means the market knows something the signal does not |
 
-Same bar, same stack, two different quotes:
-
-```
-253s in, 84/16 → NO   (entry_window, time_to_expiry, market_not_decided all fail)
-  8s in, 51/49 → YES  buy DOWN at 0.510, edge +0.099
-```
-
-**The opposite side is deliberately not taken.** When the quote is lopsided the
-other side looks cheap, and the tool reports its edge — but taking it means
-betting against your own signal on the strength of a price that moved because
-you were late. That is exactly what a stale signal feels like from the inside.
-
-### Gas is a first-order cost, not a rounding error
-
-Every bet is a BNB Smart Chain transaction. Gas is charged per bet regardless of
-size, so on a small stake it eats the entire edge. The venue layer refuses any
-bet whose expected profit does not cover it, and `minimum_viable_stake()` tells
-you where the floor is:
-
-```
-minimum viable stake at this edge: 4.63 (3x the 0.30 gas cost)
+```bash
+python -m btc5m quote --config configs/polymarket-5m.json --down 49 --brief
+DOWN - buy at 0.507 - stake 13.00 - edge +0.113 - 294s left
+NO BET - market already decided (skew 0.34)
+NO BET - price 0.636 too high for p 0.621
+NO BET - persistence: returns_trend
 ```
 
-Set `gas_cost_quote` to what you actually pay. Measure it; do not guess. The
-same applies to the **overround**: if UP and DOWN together cost more than 1.00,
-that excess is the venue's margin and you pay it on every bet. Pass it with
-`--overround` and watch what it does to the edge before committing.
+The price shown includes the venue's fee, so the same 0.49 quote reads as 0.507
+on Polymarket and 0.490 on predict.fun. Each config declares its own venue, so a
+Polymarket config cannot be priced with the wrong fee schedule by accident.
+
+The opposite side is reported but deliberately not taken. When the quote is
+lopsided the other side looks cheap, and buying it means betting against your
+own signal on the strength of a price that moved because you were late.
+
+### Break-even is the price you pay
+
+Our probability model caps at `prob_cap` (0.64), so there is a hard ceiling on
+what it can ever justify buying: **nothing above about 0.60**, and on Polymarket
+nothing above about 0.58 once the fee is added. A model claiming 85% confidence
+in a five-minute BTC direction is lying, so this is a feature.
 
 ### Price source
 
-Settlement uses the Chainlink mid-price (the average of Binance's best bid and
-ask), not the last traded price. For **live** decisions read the mid, via
-`fetch_topofbook_mid()` or the Chainlink stream directly.
-
-For **backtesting** it does not matter. Binance's BTCUSDT spread is about one
-cent, so mid and last differ by at most half a cent, while the median 5-minute
-move is about 32 dollars. Only 0.008% of bars move less than half a spread.
-Ordinary klines are fine for history.
+Settlement uses a Chainlink mid-price, not the last traded price — and note the
+pair differs: predict.fun settles on BTC/**USDT** top-of-book, Polymarket on
+BTC/**USD**. For live decisions read the mid. For backtesting it does not
+matter: Binance's BTCUSDT spread is about a cent against a median five-minute
+move of about 32 dollars, and only 0.008% of bars move less than half a spread.
 
 ### What is not built: signing and sending
 
-The engine decides. It does not place orders, and the gap between those is real:
+The engine decides. It does not place orders, and the gap is real:
 
-- Placing a bet means signing a BNB Smart Chain transaction against the market
-  contract, which needs the contract address and ABI, a funded wallet, and a
-  Web3 connection.
+- Both venues need a funded wallet and either a signed on-chain transaction
+  (predict.fun on BNB Chain) or an authenticated CLOB order (Polymarket).
 - **Never paste a seed phrase or private key into this repository, a terminal,
-  a chat, or any tool.** Trust Wallet's recovery phrase controls every asset in
-  the wallet, not just a trading balance. Anything that asks for it is a theft.
-- If you automate this, do it from a **separate hot wallet** holding only what
-  you are prepared to lose, with its key in an environment variable or a
-  hardware signer, never in source control.
-- Latency matters more than it looks. Our entry window is 45 seconds; BSC block
-  time is about 3 seconds and a congested mempool can eat that margin. Measure
-  the round trip before trusting the `entry_window` default.
+  a chat, or any tool.** A recovery phrase controls every asset in the wallet,
+  not a trading balance. Anything that asks for it is a theft.
+- Automate from a **separate hot wallet** holding only what you can lose, with
+  its key in an environment variable or a hardware signer, never in git.
+- Latency matters. The entry window is 45 seconds; measure the full round trip
+  before trusting that default.
 
-The honest intermediate step is to run `quote` manually against live markets and
-place the bets by hand for a few weeks. It costs nothing, it tests the part most
-likely to be wrong — whether the quote is ever near even when the signal fires —
-and it produces the data you would need to justify automating anything.
-
----
+The honest next step is to run `quote` against live markets and place bets by
+hand for a few weeks. It costs nothing, and it tests the assumption most likely
+to be wrong: whether the quote is ever near even at the moment the signal fires.
+If it never is, the edge does not exist at that venue however good the gates are.
 
 ## What these numbers do and do not mean
 
@@ -764,7 +728,7 @@ btc5m/
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market
-tests/            267 tests
+tests/            282 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -774,7 +738,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 267 passed
+python -m pytest tests/ -q      # 282 passed
 ```
 
 ---
@@ -796,10 +760,12 @@ Presets: `default` / `trend5` (the five-gate stack), `trend4` (the same without
 `trend6-session`, `thrust`, `meanrev`, `everything`. List them with
 `python -m btc5m menu`.
 
-Bundled configs: `configs/default.json` (fixed-odds, 1.90x),
-`configs/conservative.json` (six gates, tighter risk, halts when unhealthy),
-`configs/prediction-market.json` (contract pricing, fees, void on tie),
-`configs/trustwallet-bnb-5m.json` (the Trust Wallet BNB Smart Chain market).
+Bundled configs: **`configs/predict-fun-bnb-5m.json`** (what Trust Wallet
+surfaces) and **`configs/polymarket-5m.json`** are the two to use.
+`configs/default.json` (fixed odds, 1.90x), `configs/conservative.json` and
+`configs/prediction-market.json` are kept as references for the non-contract
+case; note the latter two still run larger stacks, so numbers quoted for them
+elsewhere in this README were measured with those gates.
 
 Unknown config keys are rejected rather than ignored, so a typo is an error
 instead of a silently ignored setting.

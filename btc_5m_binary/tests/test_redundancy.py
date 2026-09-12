@@ -231,9 +231,24 @@ def test_leave_one_out_reports_the_full_stack_plus_each_removal(rig):
     rows = leave_one_out(series, cfg)
     assert rows[0].removed == "(none)"
     removed = {r.removed for r in rows[1:]}
-    # A stack cannot drop below three gates, so some removals are skipped.
     assert removed <= set(cfg.gate_stack)
+
+
+def test_leave_one_out_on_a_three_gate_stack_has_nothing_to_remove():
+    """The validator floors a stack at three, so every removal is skipped."""
+    cfg = config_from_dict()
+    assert len(cfg.gate_stack) == 3
+    rows = leave_one_out(synthetic(6000, seed=314), cfg)
+    assert len(rows) == 1
+    assert rows[0].removed == "(none)"
+
+
+def test_leave_one_out_removes_gates_when_the_stack_can_spare_them():
+    cfg = config_from_dict({"gate_stack": ["data_integrity", "volatility_regime",
+                                           "trend_alignment", "persistence"]})
+    rows = leave_one_out(synthetic(6000, seed=315), cfg)
     assert len(rows) >= 2
+    assert {r.removed for r in rows[1:]} <= set(cfg.gate_stack)
 
 
 def test_removing_a_gate_cannot_tighten_the_gate_filter(rig):

@@ -90,8 +90,22 @@ def test_kelly_fraction_scales_the_stake():
 
 
 def test_stake_below_the_minimum_is_refused():
-    rm = manager(max_stake_pct=0.02, min_stake=10_000.0)
-    decision = rm.assess(bar_index=1, ts=BASE_TS, p_model=0.60)
+    """The runtime case: the bankroll drifts under the cliff during a run.
+
+    A config that *starts* below the minimum is refused by the validator, but
+    nothing can stop a bankroll from falling there while the strategy runs, and
+    at that point every later bet is refused. Worth its own test, because the
+    refusal reads like an ordinary risk decision rather than a dead end.
+    """
+    from btc5m.config import RiskConfig
+
+    risk_cfg = RiskConfig(starting_bankroll=1_000.0, max_stake_pct=0.02,
+                          min_stake=15.0)
+    rm = RiskManager(risk_cfg, 1 / 1.9, 0.90)
+    assert rm.assess(bar_index=1, ts=BASE_TS, p_model=0.60).approved
+
+    rm.bankroll = 500.0          # the 2% cap is now 10.00, under the 15.00 floor
+    decision = rm.assess(bar_index=2, ts=BASE_TS, p_model=0.60)
     assert not decision.approved
     assert "minimum stake" in condition(decision, "stake_sizing").detail
 

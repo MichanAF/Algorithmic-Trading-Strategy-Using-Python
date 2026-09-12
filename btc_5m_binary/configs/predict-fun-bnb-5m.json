@@ -1,0 +1,46 @@
+{
+  "name": "btc-5m-binary-predict-fun",
+  "symbol": "BTCUSDT",
+  "venue": "predict-fun-btc-5m",
+  "gate_stack": [
+    "data_integrity",
+    "trend_alignment",
+    "persistence"
+  ],
+  "_venue": "predict.fun on BNB Smart Chain, which is what Trust Wallet's Predictions tab and Binance Wallet's prediction markets both surface -- they are one venue. Collateral is USDT on BNB Chain. Settles from the Chainlink BTC/USDT top-of-book stream (the mid of Binance's best bid and ask). An exact tie pays 0.50 to both sides. The venue's own trading fee is not documented in anything public that was checked: fee_bps is 0 here and you should measure a real fill and set it.",
+  "_gates": "Three gates, one per genuinely distinct question about a yes/no bet on the next five minutes. data_integrity: is the input real? A gapped or stuck feed turns the bet into a coin flip at worse odds. trend_alignment: which way? The only gate whose removal drops the stack below break-even. persistence: does 'which way' mean anything right now? Five-minute BTC returns are mildly negatively autocorrelated, so following a trend only pays in the subset of time when moves extend. Chosen by purpose, then confirmed on 1,042 days never used for selection, where it led every other three-gate combination on expected value per day.",
+  "_gates_not_used": "Deliberately not used. volatility_regime: its floor assumes a spread this bet never crosses; accuracy is flat across the whole volatility range. participation: its verdict adds no information once the other two agree (z = +1.9). momentum_thrust: anti-predictive over the very next bar (z = -8.2). location: harmful as a voter on a trend stack. session: roughly free but spends a slot on a veto with no directional content. Swap persistence for the 'regime' veto if you want exactly one direction vote; it measured equal.",
+  "_throttle": "min_conviction is the throttle, not the gate count. At 0.60 the three-gate stack fires 44.8 times a day; at 0.85 it fires 16.2 times at 58.9% instead of 56.3%. Higher is right HERE because BNB gas is a fixed cost per bet, so halving the bet count halves the gas bill: at 16/day gas is about 4.90 a day, and the arithmetic works from roughly a 2,000 bankroll. max_stake_pct 0.25% x 16.2 bets/day holds total daily risk near 4%.",
+  "betting": {
+    "mode": "unanimous",
+    "min_conviction": 0.85,
+    "min_directional_gates": 2,
+    "payout_mode": "contract_price",
+    "contract_price": 0.5,
+    "fee_bps": 0.0,
+    "required_edge": 0.04,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "bar_seconds": 300,
+    "latency_seconds": 5,
+    "max_signal_age_seconds": 45,
+    "min_seconds_to_expiry": 60,
+    "tie_policy": "void",
+    "deadband_bps": 0.0
+  },
+  "risk": {
+    "starting_bankroll": 5000.0,
+    "kelly_fraction": 0.2,
+    "max_stake_pct": 0.0025,
+    "min_stake": 2.0,
+    "daily_loss_limit_pct": 0.04,
+    "max_drawdown_pct": 0.15,
+    "max_consecutive_losses": 4,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 6,
+    "max_concurrent_bets": 1,
+    "halt_when_unhealthy": false
+  },
+  "_health": "halt_when_unhealthy is off on purpose. It is a sticky stop-and-review, and the rolling hit rate can only improve by placing more bets, so halting freezes the measurement that would clear it. Off, an unhealthy stretch halves the stake instead and the strategy can recover on its own.",
+  "_sizing": "max_stake_pct 0.25% x 16.2 bets/day holds total daily risk near 4%. On a 5,000 bankroll that is 12.50 a bet, comfortably above min_stake, which matters: a cap sitting at the minimum stops the strategy for good on the first loss. predict.fun publishes no minimum order, so min_stake 2.00 is ours to pick -- set it above whatever makes the 0.30 gas bill tolerable. At 12.50 a bet, gas is about 2% of the expected profit."
+}

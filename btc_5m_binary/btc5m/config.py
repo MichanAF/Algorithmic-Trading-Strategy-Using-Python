@@ -173,7 +173,9 @@ class BettingConfig:
     payout_mode: str = "fixed_odds"    # "fixed_odds" | "contract_price"
     net_payout: float = 0.90           # a win pays 0.90 x stake in profit
     contract_price: float = 0.52       # prediction-market price for a $1 payout
-    fee_bps: float = 0.0               # round-trip fee on stake, basis points
+    # Basis points of the contract's 1.00 face value, not of the price paid:
+    # 175 bps is 1.75 cents per contract. VenueRules.fee_per_share matches.
+    fee_bps: float = 0.0
     required_edge: float = 0.03        # p_model must clear break-even by this
     prob_cap: float = 0.64             # conviction 1.0 maps to this probability
     prob_curve: float = 1.0            # >1 makes the map more conservative
@@ -184,7 +186,7 @@ class BettingConfig:
     latency_seconds: int = 5            # assumed decide-to-placed delay
     max_signal_age_seconds: int = 45
     min_seconds_to_expiry: int = 60
-    tie_policy: str = "loss"           # "loss" | "void"
+    tie_policy: str = "loss"           # "loss" | "void" | "favor_up" | "favor_down"
     deadband_bps: float = 0.0          # |move| under this counts as a tie
 
 
@@ -226,18 +228,28 @@ class RiskConfig:
 # top level
 # --------------------------------------------------------------------------- #
 
-# Five gates: two vetoes that decide whether the market is playable, and three
-# directional gates that must agree on the side.  Chosen for what each gate
-# contributes, then checked with `btc5m compare` -- see README "Choosing a
-# stack".  Notably `momentum_thrust` is NOT here: a single-bar thrust is
-# anti-predictive over the very next bar, because five-minute BTC returns are
-# mildly negatively autocorrelated.  `persistence` earns the slot instead.
+# Three gates, one per genuinely distinct question about a yes/no bet on the
+# next five minutes:
+#
+#   data_integrity   is the input real?      A gapped or stuck feed turns the
+#                                            bet into a coin flip at worse odds.
+#   trend_alignment  which way?              The only gate whose removal drops
+#                                            the stack below break-even.
+#   persistence      does "which way" mean   Five-minute BTC returns are mildly
+#                    anything right now?     negatively autocorrelated, so
+#                                            following a trend only pays in the
+#                                            subset of time when moves extend.
+#
+# Chosen by purpose and then confirmed on 1,042 days never used for selection,
+# where it led every other three-gate combination on expected value per day.
+# Three gates the stack does NOT use, and why, are in README "Cherry-picking
+# three gates": volatility_regime assumes a spread this bet never crosses,
+# participation adds no information once the others agree, and momentum_thrust
+# is anti-predictive over the very next bar.
 DEFAULT_GATE_STACK = [
     "data_integrity",
-    "volatility_regime",
     "trend_alignment",
     "persistence",
-    "participation",
 ]
 
 
@@ -245,6 +257,10 @@ DEFAULT_GATE_STACK = [
 class StrategyConfig:
     name: str = "btc-5m-binary-default"
     symbol: str = "BTCUSDT"
+    # Which venue's rules apply: fee model, tie handling, minimum order, gas.
+    # Declared here so a Polymarket config cannot silently be priced with
+    # another venue's fee schedule. Must name a key of btc5m.venue.VENUES.
+    venue: str = "predict-fun-btc-5m"
     gate_stack: list[str] = field(default_factory=lambda: list(DEFAULT_GATE_STACK))
     gates: GateParams = field(default_factory=GateParams)
     betting: BettingConfig = field(default_factory=BettingConfig)
@@ -254,6 +270,11 @@ class StrategyConfig:
 
     def validate(self) -> None:
         from .gates import GATE_REGISTRY
+        from .venue import VENUES
+
+        if self.venue not in VENUES:
+            raise ValueError(
+                f"unknown venue {self.venue!r}; available: {sorted(VENUES)}")
 
         if not self.gate_stack:
             raise ValueError("gate_stack is empty: the strategy would never bet")
@@ -273,7 +294,7 @@ class StrategyConfig:
             raise ValueError(f"unknown betting mode {self.betting.mode!r}")
         if self.betting.payout_mode not in ("fixed_odds", "contract_price"):
             raise ValueError(f"unknown payout mode {self.betting.payout_mode!r}")
-        if self.betting.tie_policy not in ("loss", "void"):
+        if self.betting.tie_policy not in ("loss", "void", "favor_up", "favor_down"):
             raise ValueError(f"unknown tie policy {self.betting.tie_policy!r}")
         if not 0.0 < self.betting.prob_cap < 1.0:
             raise ValueError("prob_cap must be strictly between 0 and 1")
@@ -285,6 +306,31 @@ class StrategyConfig:
             raise ValueError("kelly_fraction must be positive")
         if self.risk.starting_bankroll <= 0.0:
             raise ValueError("starting_bankroll must be positive")
+
+        # A stake cap that sits at or under the minimum stake is a silent
+        # lock-up, not a tight setting: the first loss drops the cap below the
+        # minimum and every later bet is refused for a reason that reads like an
+        # ordinary risk decision. Catch it here instead.
+        ceiling = self.risk.starting_bankroll * self.risk.max_stake_pct
+        if ceiling < self.risk.min_stake:
+            raise ValueError(
+                f"max_stake_pct {self.risk.max_stake_pct:.4%} of a "
+                f"{self.risk.starting_bankroll:,.2f} bankroll is "
+                f"{ceiling:,.2f}, below min_stake {self.risk.min_stake:,.2f}: "
+                f"no bet could ever be placed. Raise the bankroll to at least "
+                f"{self.risk.min_stake / self.risk.max_stake_pct:,.0f}, raise "
+                f"max_stake_pct, or lower min_stake."
+            )
+        if ceiling < self.risk.min_stake * 1.5:
+            raise ValueError(
+                f"max_stake_pct {self.risk.max_stake_pct:.4%} of a "
+                f"{self.risk.starting_bankroll:,.2f} bankroll is "
+                f"{ceiling:,.2f}, only {ceiling / self.risk.min_stake:.2f}x "
+                f"min_stake {self.risk.min_stake:,.2f}. A single loss drops the "
+                f"cap under the minimum and the strategy stops for good. Give it "
+                f"at least 1.5x headroom: bankroll "
+                f"{1.5 * self.risk.min_stake / self.risk.max_stake_pct:,.0f}+."
+            )
 
         if self.implied_conviction_floor() is None:
             raise ValueError(

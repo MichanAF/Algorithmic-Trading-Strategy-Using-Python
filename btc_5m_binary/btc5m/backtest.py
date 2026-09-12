@@ -240,12 +240,24 @@ class BacktestResult:
 
 def resolve_outcome(entry: float, exit_: float, side: int, deadband_bps: float,
                     tie_policy: str) -> str:
-    """Did the bet win?  ``side`` is UP or DOWN; ties follow the venue's rule."""
+    """Did the bet win?  ``side`` is UP or DOWN; ties follow the venue's rule.
+
+    Tie policies differ by venue and are not interchangeable.  predict.fun pays
+    0.50 to both sides on an exact tie ("void" here).  Polymarket resolves Up
+    when the end price is *greater than or equal to* the start, so a tie pays
+    the UP side in full and costs the DOWN side everything ("favor_up").
+    """
     if entry <= 0:
         return "void"
     move_bps = (exit_ - entry) / entry * 10_000.0
     if abs(move_bps) < deadband_bps or move_bps == 0.0:
-        return "void" if tie_policy == "void" else "loss"
+        if tie_policy == "void":
+            return "void"
+        if tie_policy == "favor_up":
+            return "win" if side == UP else "loss"
+        if tie_policy == "favor_down":
+            return "win" if side == DOWN else "loss"
+        return "loss"
     direction = UP if move_bps > 0 else DOWN
     return "win" if direction == side else "loss"
 
@@ -330,6 +342,6 @@ def run_backtest(series: BarSeries, cfg: StrategyConfig,
     # Any bet still open at the end of the series never resolved; drop it
     # rather than guess, and say so through the bet count.
     result.final_bankroll = risk.bankroll
-    result.halted = risk.halted
-    result.halt_reason = risk.halt_reason
+    result.halted = risk.halted or risk.health_halted
+    result.halt_reason = risk.halt_reason or risk.health_halt_reason
     return result

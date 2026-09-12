@@ -503,6 +503,40 @@ class PersistenceGate(Gate):
                             checks, note=f"VR {vr:.2f}, ADX {adx:.1f}")
 
 
+class RegimeGate(Gate):
+    """Veto -- is direction-following the right tool right now, without voting.
+
+    The same variance-ratio and ADX test ``persistence`` runs, minus the
+    +DI/-DI direction vote.  That vote agrees with ``trend_alignment`` on about
+    99% of the bars where both pass, so in a stack holding both it is not a
+    second opinion on which way -- it is one opinion counted twice.
+
+    Use this instead when you want the regime filter without the double count,
+    which is the honest shape for a three-gate stack: one gate for whether the
+    data is real, one for which way, one for whether "which way" means anything.
+    """
+
+    name = "regime"
+    kind = "veto"
+    params_key = "persistence"
+    requires = ("variance_ratio", "adx")
+
+    def _evaluate(self, fs, i, p):
+        vr = fs.get("variance_ratio", i)
+        adx = fs.get("adx", i)
+        checks = [
+            Check("returns_trend", vr >= p.min_variance_ratio,
+                  f"variance ratio {vr:.2f} >= {p.min_variance_ratio}"),
+            Check("directional_strength", adx >= p.min_adx,
+                  f"ADX {adx:.1f} >= {p.min_adx}"),
+        ]
+        ok = all(c.passed for c in checks)
+        score = 0.5 * _saturate(vr, p.min_variance_ratio, p.min_variance_ratio + 0.6) \
+            + 0.5 * _saturate(adx, p.min_adx, p.min_adx + 20.0)
+        return self._result(ok, FLAT, score if ok else 0.0, checks,
+                            note=f"VR {vr:.2f}, ADX {adx:.1f}")
+
+
 class MeanReversionGate(Gate):
     """Directional, alternative personality -- fade a stretched, exhausted move.
 
@@ -596,6 +630,7 @@ GATE_REGISTRY: dict[str, Gate] = {
         ParticipationGate(),
         LocationGate(),
         PersistenceGate(),
+        RegimeGate(),
         MeanReversionGate(),
         CrossAssetGate(),
     )

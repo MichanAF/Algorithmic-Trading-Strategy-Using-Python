@@ -52,33 +52,91 @@ class VenueRules:
     # A quote this far from even, this early, means the market already knows
     # something the signal does not.
     max_entry_skew: float = 0.12
+    fee_model: str = "flat_bps"             # "none" | "flat_bps" | "polymarket_taker"
     fee_bps: float = 0.0
+    fee_coefficient: float = 0.0            # for polymarket_taker: the 0.07
     gas_cost_quote: float = 0.0             # per bet, in quote currency
+    min_order_quote: float = 0.0            # venue minimum notional
+    tick: float = 0.0                       # smallest price increment
+    tie_resolves_to: int = 0                # UP, DOWN, or 0 for split/void
+    collateral: str = ""
 
     def window_bounds(self, window_start_ts: int) -> tuple[int, int]:
         return window_start_ts, window_start_ts + self.window_seconds
+
+    def fee_per_share(self, price: float) -> float:
+        """Fee charged per one-dollar contract, in quote currency.
+
+        Polymarket's taker fee is ``0.07 x p x (1-p)`` per share, which is not a
+        detail to flatten into basis points: it is **maximised at p = 0.5**, and
+        a coin-flip market is exactly where a five-minute direction strategy
+        wants to trade.  At 0.50 it costs 1.75 cents a share, or 3.5% of the
+        notional, on every single bet.  Posting as a maker avoids it entirely.
+        """
+        if self.fee_model == "none":
+            return 0.0
+        if self.fee_model == "polymarket_taker":
+            return self.fee_coefficient * price * (1.0 - price)
+        # fee_bps is basis points of the contract's 1.00 face value, which is
+        # the natural unit for a binary: 175 bps means 1.75 cents per contract
+        # whatever you paid for it.  StrategyConfig.break_even_probability uses
+        # the same convention, and they must not drift apart.
+        return self.fee_bps / 10_000.0
+
+    def effective_price(self, price: float) -> float:
+        """What a share really costs once the venue's fee is added."""
+        return price + self.fee_per_share(price)
 
 
 # The market in the Trust Wallet screenshots: "Bitcoin Up or Down", five-minute
 # windows on BNB Smart Chain, settled from the Chainlink BTC/USDT top-of-book
 # stream.  Gas is a placeholder -- measure your own and set it.
-TRUST_WALLET_BTC_5M = VenueRules(
-    name="trust-wallet-btc-up-down-5m",
+PREDICT_FUN_BTC_5M = VenueRules(
+    name="predict-fun-btc-5m",
     window_seconds=300,
     settlement_candle_seconds=300,
     price_feed="chainlink-btcusdt-topofbook-mid (Binance best bid/ask)",
     quote_style="contract_price",
     tie_rule="split",
+    tie_resolves_to=0,                      # equal prices pay 0.50 to both sides
     chain="BNB Smart Chain",
+    collateral="USDT",
     settlement_url="https://data.chain.link/streams/btc-usdt-topofbook-datalink",
     max_entry_seconds=45,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
-    fee_bps=0.0,
-    gas_cost_quote=0.30,
+    fee_model="flat_bps",
+    fee_bps=0.0,                            # measure your own fills and set this
+    gas_cost_quote=0.30,                    # BNB Chain gas; measure and set
 )
 
-VENUES = {TRUST_WALLET_BTC_5M.name: TRUST_WALLET_BTC_5M}
+# Trust Wallet's Predictions tab is predict.fun, so the two are one venue.
+TRUST_WALLET_BTC_5M = PREDICT_FUN_BTC_5M
+
+POLYMARKET_BTC_5M = VenueRules(
+    name="polymarket-btc-5m",
+    window_seconds=300,
+    settlement_candle_seconds=300,
+    price_feed="chainlink-btcusd (data.chain.link/streams/btc-usd)",
+    quote_style="contract_price",
+    # Resolves Up when the end price is >= the start price, so an exact tie pays
+    # the UP side and costs the DOWN side.  Not a 50-50 split.
+    tie_rule="favor_up",
+    tie_resolves_to=UP,
+    chain="Polygon",
+    collateral="USDC",
+    settlement_url="https://data.chain.link/streams/btc-usd",
+    max_entry_seconds=45,
+    min_seconds_to_expiry=60,
+    max_entry_skew=0.12,
+    fee_model="polymarket_taker",
+    fee_coefficient=0.07,                   # fee/share = 0.07 x p x (1-p)
+    gas_cost_quote=0.0,                     # gas-free CLOB; maker fee is zero
+    min_order_quote=5.0,
+    tick=0.01,
+)
+
+VENUES = {v.name: v for v in (PREDICT_FUN_BTC_5M, POLYMARKET_BTC_5M)}
 
 
 @dataclass
@@ -193,6 +251,12 @@ class MarketDecision:
 
     def brief(self) -> str:
         """One line, for the forty-five seconds you actually have to decide."""
+        if self.approved and self.risk is None:
+            # Priced without a risk manager: this says the bet is worth taking,
+            # not how much to stake. Do not imply a size nobody sized.
+            return (f"{direction_name(self.side)} - buy at {self.price:.3f} - "
+                    f"edge {self.edge:+.3f} - {self.quote.seconds_to_expiry}s left"
+                    f" - no stake sized")
         if self.approved:
             return (f"{direction_name(self.side)} - buy at {self.price:.3f} - "
                     f"stake {self.stake:,.2f} - edge {self.edge:+.3f} - "
@@ -254,19 +318,19 @@ def evaluate_market(signal: Signal, quote: MarketQuote, cfg: StrategyConfig,
     """
     rules = rules or quote.rules
     side = signal.side
-    fee = rules.fee_bps / 10_000.0
 
     if side == FLAT:
         price = float("nan")
         edge = float("nan")
     else:
-        price = quote.price_for(side) + fee
+        price = rules.effective_price(quote.price_for(side))
         edge = signal.p_model - price
 
     ev_per_contract = (signal.p_model * (1.0 - price) - (1.0 - signal.p_model) * price
                        if side != FLAT else float("nan"))
     other_edge = (None if side == FLAT
-                  else (1.0 - signal.p_model) - (quote.price_for(-side) + fee))
+                  else (1.0 - signal.p_model)
+                  - rules.effective_price(quote.price_for(-side)))
 
     conditions = [
         Check("gate_signal", side != FLAT and signal.tradable,
@@ -317,6 +381,16 @@ def evaluate_market(signal: Signal, quote: MarketQuote, cfg: StrategyConfig,
 
     decision.stake = risk_decision.stake
     decision.contracts = risk_decision.stake / price if price > 0 else 0.0
+
+    if rules.min_order_quote and decision.stake < rules.min_order_quote:
+        decision.approved = False
+        decision.blocked_by = ("min_order",)
+        decision.conditions = decision.conditions + (
+            Check("min_order", False,
+                  f"stake {decision.stake:,.2f} is below the venue minimum "
+                  f"{rules.min_order_quote:,.2f}; raise the bankroll, the stake "
+                  f"cap, or tighten the stack so it fires less often"),)
+        return decision
 
     # Gas is charged per bet regardless of size, so on a small stake it can eat
     # the whole edge.  Refusing here is cheaper than discovering it in the P&L.

@@ -33,9 +33,9 @@ def signals(cfg, series, fs, only_tradable=False):
 
 def test_engine_splits_the_stack_by_kind(rig):
     cfg, _, _, engine = rig
-    assert [g.name for g in engine.veto_gates] == ["data_integrity", "volatility_regime"]
+    assert [g.name for g in engine.veto_gates] == ["data_integrity"]
     assert [g.name for g in engine.directional_gates] == [
-        "trend_alignment", "persistence", "participation"]
+        "trend_alignment", "persistence"]
     assert engine.confirm_gates == []
 
 
@@ -43,7 +43,8 @@ def test_required_features_are_deduplicated(rig):
     _, _, _, engine = rig
     required = engine.required_features
     assert len(required) == len(set(required))
-    assert "atr_rank" in required
+    # One feature from each gate in the default stack.
+    assert {"gap_bars", "ema_fast", "variance_ratio"} <= set(required)
 
 
 def test_break_even_and_odds_agree_with_the_payout(rig):
@@ -74,8 +75,13 @@ def test_a_tradable_signal_has_every_gate_passing(rig):
         assert sig.side in (UP, DOWN)
 
 
-def test_a_failed_veto_blocks_the_bar_and_is_the_only_reason(rig):
-    cfg, series, fs, engine = rig
+def test_a_failed_veto_blocks_the_bar_and_is_the_only_reason(series):
+    """Uses a stack with a veto that actually fires: the default stack's only
+    veto is data_integrity, which never fails on a clean feed."""
+    cfg = config_from_dict({"gate_stack": ["data_integrity", "volatility_regime",
+                                           "trend_alignment", "persistence"]})
+    fs = build_features(series, cfg)
+    engine = SignalEngine(cfg)
     for i in range(engine.warmup_bars(fs), len(series)):
         sig = engine.evaluate(fs, i)
         vetoes = [g for g in sig.gate_results if g.is_veto and not g.passed]

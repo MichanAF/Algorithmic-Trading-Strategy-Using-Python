@@ -192,8 +192,12 @@ def test_significance_flag_agrees_with_the_z_score(result):
 # --------------------------------------------------------------------------- #
 
 def test_a_series_shorter_than_the_warmup_returns_an_empty_result():
+    """Length is derived, not hardcoded: the warm-up shrank when the stack did."""
     cfg = config_from_dict()
-    result = run_backtest(synthetic(500, seed=1), cfg)
+    probe = synthetic(2000, seed=1)
+    warmup = SignalEngine(cfg).warmup_bars(build_features(probe, cfg))
+    assert warmup > 1, "expected some warm-up to test against"
+    result = run_backtest(probe[:warmup], cfg)
     assert result.bets == []
     assert result.final_bankroll == result.starting_bankroll
     assert result.max_drawdown == 0.0

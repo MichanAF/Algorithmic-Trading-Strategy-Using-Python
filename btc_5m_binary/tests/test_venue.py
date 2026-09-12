@@ -8,7 +8,8 @@ from btc5m.features import build_features
 from btc5m.gates import DOWN, FLAT, UP
 from btc5m.risk import RiskManager
 from btc5m.signal import SignalEngine
-from btc5m.venue import (TRUST_WALLET_BTC_5M, MarketQuote, VenueRules,
+from btc5m.venue import (POLYMARKET_BTC_5M, PREDICT_FUN_BTC_5M, VENUES,
+                         TRUST_WALLET_BTC_5M, MarketQuote, VenueRules,
                          evaluate_market, minimum_viable_stake)
 
 WINDOW = 1_757_675_700          # a 5-minute boundary
@@ -27,6 +28,17 @@ def rig():
 
 
 def quote_at(seconds_in, down=0.51, overround=0.0, window=WINDOW):
+    return MarketQuote.from_percent(window, down, observed_ts=window + seconds_in,
+                                    overround=overround)
+
+
+def priced_for(side, price, seconds_in=6, window=WINDOW, overround=0.0):
+    """A quote where *the signal's own side* costs ``price``.
+
+    Tests must not assume which way the stack leans: change the gate stack and
+    the side flips, which silently inverts "cheap" and "dear".
+    """
+    down = price if side == DOWN else 1.0 - price
     return MarketQuote.from_percent(window, down, observed_ts=window + seconds_in,
                                     overround=overround)
 
@@ -108,7 +120,7 @@ def test_a_decided_market_late_in_the_window_is_refused(rig):
 def test_an_even_market_at_the_open_is_taken(rig):
     cfg, _, fs, engine, index = rig
     signal = engine.evaluate(fs, index)
-    q = quote_at(8, down=51, window=int(fs.series.ts[index]))
+    q = priced_for(signal.side, 0.49, seconds_in=8, window=int(fs.series.ts[index]))
     decision = evaluate_market(signal, q, cfg)
     assert decision.approved
     assert decision.side == signal.side
@@ -133,8 +145,8 @@ def test_break_even_is_the_price_paid(rig):
     cfg, _, fs, engine, index = rig
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
-    dear = evaluate_market(signal, quote_at(5, down=57, window=window), cfg)
-    cheap = evaluate_market(signal, quote_at(5, down=45, window=window), cfg)
+    dear = evaluate_market(signal, priced_for(signal.side, 0.57, window=window), cfg)
+    cheap = evaluate_market(signal, priced_for(signal.side, 0.45, window=window), cfg)
     assert cheap.edge > dear.edge
     assert cheap.edge == pytest.approx(signal.p_model - cheap.price)
 
@@ -144,7 +156,7 @@ def test_a_price_above_the_probability_cap_can_never_be_bought(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     # prob_cap is 0.64, so nothing near 0.64 clears required_edge on top.
-    decision = evaluate_market(signal, quote_at(5, down=62, window=window), cfg)
+    decision = evaluate_market(signal, priced_for(signal.side, 0.62, window=window), cfg)
     assert not condition(decision, "priced_edge").passed
 
 
@@ -184,7 +196,7 @@ def test_the_stake_is_sized_with_the_live_contract_odds(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
-    q = quote_at(5, down=40, window=window)
+    q = priced_for(signal.side, 0.40, window=window)
     decision = evaluate_market(signal, q, cfg, risk=risk)
     expected_odds = (1.0 - decision.price) / decision.price
     assert f"{expected_odds:.3f}x" in decision.risk.conditions[0].detail
@@ -195,7 +207,7 @@ def test_contracts_follow_from_stake_and_price(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
-    decision = evaluate_market(signal, quote_at(5, down=48, window=window),
+    decision = evaluate_market(signal, priced_for(signal.side, 0.48, window=window),
                                cfg, risk=risk)
     assert decision.approved
     assert decision.contracts == pytest.approx(decision.stake / decision.price)
@@ -211,7 +223,7 @@ def test_gas_larger_than_the_edge_refuses_the_bet(rig):
                                       "max_stake_pct": 0.02, "min_stake": 0.5}})
     greedy = VenueRules(name="expensive", gas_cost_quote=500.0, max_entry_skew=0.5)
     risk = RiskManager(tiny.risk, engine.break_even, engine.odds)
-    decision = evaluate_market(signal, quote_at(5, down=48, window=window),
+    decision = evaluate_market(signal, priced_for(signal.side, 0.48, window=window),
                                tiny, risk=risk, rules=greedy)
     assert not decision.approved
     assert decision.blocked_by == ("gas_cost",)
@@ -233,21 +245,79 @@ def test_minimum_viable_stake_scales_with_gas_and_shrinks_with_edge():
 # --------------------------------------------------------------------------- #
 
 def test_the_bundled_venue_config_loads_and_prices_a_contract():
-    cfg = load_config("configs/trustwallet-bnb-5m.json")
+    cfg = load_config("configs/predict-fun-bnb-5m.json")
     cfg.validate()
     assert cfg.betting.payout_mode == "contract_price"
     assert cfg.betting.tie_policy == "void"
     assert cfg.break_even_probability() == pytest.approx(cfg.betting.contract_price)
 
 
-def test_the_trust_wallet_profile_matches_the_published_rules():
-    v = TRUST_WALLET_BTC_5M
+def test_trust_wallet_is_predict_fun():
+    """Trust Wallet's Predictions tab surfaces predict.fun, so it is one venue."""
+    assert TRUST_WALLET_BTC_5M is PREDICT_FUN_BTC_5M
+
+
+def test_the_predict_fun_profile_matches_the_published_rules():
+    v = PREDICT_FUN_BTC_5M
     assert v.window_seconds == 300
     assert v.settlement_candle_seconds == 300
     assert v.quote_style == "contract_price"
     assert v.tie_rule == "split"
+    assert v.tie_resolves_to == FLAT
     assert "chain.link" in v.settlement_url
     assert "BNB" in v.chain
+    assert v.collateral == "USDT"
+
+
+def test_the_polymarket_profile_matches_the_published_rules():
+    v = POLYMARKET_BTC_5M
+    assert v.window_seconds == 300
+    assert v.chain == "Polygon"
+    assert v.collateral == "USDC"
+    assert v.min_order_quote == 5.0
+    assert v.tick == 0.01
+    # Resolves Up on >=, so a tie pays UP rather than splitting.
+    assert v.tie_rule == "favor_up"
+    assert v.tie_resolves_to == UP
+    assert "btc-usd" in v.settlement_url
+
+
+def test_polymarket_taker_fee_peaks_at_an_even_market():
+    """Which is exactly where a five-minute direction strategy wants to trade."""
+    v = POLYMARKET_BTC_5M
+    at_even = v.fee_per_share(0.50)
+    assert at_even == pytest.approx(0.07 * 0.25)
+    assert at_even > v.fee_per_share(0.30)
+    assert at_even > v.fee_per_share(0.70)
+    assert v.effective_price(0.50) == pytest.approx(0.5175)
+
+
+def test_the_two_fee_layers_agree_at_the_reference_price():
+    """config.break_even_probability and VenueRules.fee_per_share must not drift."""
+    cfg = load_config("configs/polymarket-5m.json")
+    assert cfg.break_even_probability() == pytest.approx(
+        POLYMARKET_BTC_5M.effective_price(0.50), abs=1e-9)
+
+
+def test_a_venue_minimum_order_refuses_a_stake_below_it():
+    cfg = load_config("configs/polymarket-5m.json")
+    series = synthetic(20_000, seed=11)
+    fs = build_features(series, cfg)
+    engine = SignalEngine(cfg)
+    index = next(i for i in range(engine.warmup_bars(fs), len(series))
+                 if engine.evaluate(fs, i).tradable)
+    signal = engine.evaluate(fs, index)
+    window = int(series.ts[index])
+    # A bankroll small enough that the capped stake falls under 5 USDC.
+    poor = load_config("configs/polymarket-5m.json")
+    poor.risk.starting_bankroll = 50.0
+    poor.risk.min_stake = 0.01
+    risk = RiskManager(poor.risk, engine.break_even, engine.odds)
+    decision = evaluate_market(signal, priced_for(signal.side, 0.48, window=window),
+                               poor, risk=risk, rules=POLYMARKET_BTC_5M)
+    assert not decision.approved
+    assert decision.blocked_by == ("min_order",)
+    assert "below the venue minimum" in condition(decision, "min_order").detail
 
 
 def test_a_flat_signal_produces_no_bet(rig):
@@ -269,7 +339,7 @@ def test_brief_names_the_side_the_price_and_the_stake(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
-    decision = evaluate_market(signal, quote_at(6, down=49, window=window),
+    decision = evaluate_market(signal, priced_for(signal.side, 0.49, window=window),
                                cfg, risk=risk)
     line = decision.brief()
     assert line.startswith(("UP", "DOWN"))
@@ -303,10 +373,28 @@ def test_brief_reports_the_price_when_that_is_what_blocked_it(rig):
     cfg, _, fs, engine, index = rig
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
-    decision = evaluate_market(signal, quote_at(6, down=58, window=window), cfg)
+    # Derive a price that cannot clear the edge requirement, whatever the stack
+    # is convinced of: a hardcoded one becomes affordable when conviction rises.
+    too_dear = signal.p_model - cfg.betting.required_edge + 0.02
+    decision = evaluate_market(signal, priced_for(signal.side, too_dear,
+                                                  window=window), cfg)
+    assert not condition(decision, "priced_edge").passed
     line = decision.brief()
     assert "too high" in line
     assert "nan" not in line.lower()
+
+
+def test_brief_does_not_imply_a_stake_nobody_sized(rig):
+    """Pricing without a risk manager answers "worth it?", not "how much?"."""
+    cfg, _, fs, engine, index = rig
+    signal = engine.evaluate(fs, index)
+    window = int(fs.series.ts[index])
+    decision = evaluate_market(signal, priced_for(signal.side, 0.45, window=window),
+                               cfg)
+    assert decision.approved
+    assert decision.risk is None
+    assert "no stake sized" in decision.brief()
+    assert "stake 0.00" not in decision.brief()
 
 
 def test_brief_names_the_blocking_gate_when_there_is_no_side(rig):
@@ -340,20 +428,22 @@ def test_signal_brief_is_one_line_either_way(rig):
 # no volatility band on a contract market
 # --------------------------------------------------------------------------- #
 
-def test_the_venue_config_has_no_volatility_gate():
+def test_the_venue_configs_run_three_gates_without_a_volatility_band():
     """A yes/no bet crosses no spread, so a move-size floor buys nothing.
 
     Measured over 1,042 unseen days, accuracy is the same either side of the
     band. The tail guard lives in risk.atr_shock_rank instead.
     """
-    cfg = load_config("configs/trustwallet-bnb-5m.json")
-    assert "volatility_regime" not in cfg.gate_stack
-    assert cfg.risk.atr_shock_rank < 1.0
-    assert 3 <= len(cfg.gate_stack) <= 5
+    for path in ("configs/predict-fun-bnb-5m.json", "configs/polymarket-5m.json"):
+        cfg = load_config(path)
+        assert "volatility_regime" not in cfg.gate_stack, path
+        assert cfg.risk.atr_shock_rank < 1.0, path
+        assert cfg.gate_stack == ["data_integrity", "trend_alignment",
+                                  "persistence"], path
 
 
 def test_the_volatility_shock_veto_still_works_without_the_gate():
-    cfg = load_config("configs/trustwallet-bnb-5m.json")
+    cfg = load_config("configs/predict-fun-bnb-5m.json")
     risk = RiskManager(cfg.risk, cfg.break_even_probability(), cfg.payoff_odds())
     calm = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.5)
     shock = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.999)
@@ -369,3 +459,43 @@ def test_configs_may_carry_underscore_notes(tmp_path):
                              "betting": {"_note": "also fine", "net_payout": 0.93}}))
     cfg = load_config(p)
     assert cfg.betting.net_payout == pytest.approx(0.93)
+
+
+# --------------------------------------------------------------------------- #
+# the config declares its venue
+# --------------------------------------------------------------------------- #
+
+def test_every_bundled_config_declares_a_known_venue():
+    import glob
+    paths = sorted(glob.glob("configs/*.json"))
+    assert paths
+    for path in paths:
+        cfg = load_config(path)
+        cfg.validate()
+        assert cfg.venue in VENUES, path
+
+
+def test_an_unknown_venue_is_rejected():
+    with pytest.raises(ValueError, match="unknown venue"):
+        config_from_dict({"venue": "not-a-venue"})
+
+
+def test_the_venue_configs_point_at_their_own_venue():
+    assert load_config("configs/polymarket-5m.json").venue == "polymarket-btc-5m"
+    assert load_config("configs/predict-fun-bnb-5m.json").venue == "predict-fun-btc-5m"
+
+
+def test_the_same_quote_costs_more_on_the_fee_charging_venue(rig):
+    """A config cannot be priced with another venue's fee schedule by accident."""
+    _, _, fs, engine, index = rig
+    signal = engine.evaluate(fs, index)
+    window = int(fs.series.ts[index])
+    quote = priced_for(signal.side, 0.49, window=window)
+    on_pf = evaluate_market(signal, quote, load_config("configs/predict-fun-bnb-5m.json"),
+                            rules=PREDICT_FUN_BTC_5M)
+    on_poly = evaluate_market(signal, quote, load_config("configs/polymarket-5m.json"),
+                              rules=POLYMARKET_BTC_5M)
+    assert on_poly.price > on_pf.price
+    assert on_poly.price == pytest.approx(0.49 + POLYMARKET_BTC_5M.fee_per_share(0.49))
+    assert on_pf.price == pytest.approx(0.49)
+    assert on_poly.edge < on_pf.edge
