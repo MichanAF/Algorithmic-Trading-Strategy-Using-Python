@@ -5,6 +5,7 @@
     python -m btc5m gates    --data btc_5m.csv       # what is each gate worth?
     python -m btc5m compare  --data btc_5m.csv       # which stack should I run?
     python -m btc5m overlap  --data btc_5m.csv       # are the gates independent?
+    python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m menu                             # the gate menu
 """
@@ -22,6 +23,7 @@ from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
 from .data import BarSeries, fetch_klines, load_csv, synthetic
+from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
 from .features import build_features
 from .gates import GATE_REGISTRY
 from .signal import SignalEngine
@@ -281,6 +283,52 @@ def cmd_overlap(args) -> int:
     return 0
 
 
+def cmd_quote(args) -> int:
+    """Price one live contract market against the latest bar's signal."""
+
+    from .features import build_features
+    from .risk import RiskManager
+    from .signal import SignalEngine
+
+    cfg = _build_config(args)
+    rules = VENUES[args.venue]
+    series = _load_series(args)
+    _warn_if_synthetic(args)
+    fs = build_features(series, cfg, _load_reference(args))
+    engine = SignalEngine(cfg)
+    index = args.bar if args.bar is not None else len(series) - 1
+    if index < 0:
+        index += len(series)
+    if not 0 <= index < len(series):
+        raise SystemExit(f"--bar {args.bar} is outside 0..{len(series) - 1}")
+    if index < engine.warmup_bars(fs):
+        raise SystemExit("not enough history: that bar is inside the warm-up")
+
+    # The window opens at the close of the bar we are deciding on.
+    window_start = int(series.ts[index])
+    observed = window_start + args.into_window
+    signal = engine.evaluate(fs, index, now_ts=observed)
+
+    quote = MarketQuote.from_percent(window_start, args.down, observed_ts=observed,
+                                     rules=rules, overround=args.overround)
+    risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
+    atr_rank = float(fs.values["atr_rank"][index])
+    decision = evaluate_market(signal, quote, cfg, risk=risk, rules=rules,
+                               atr_rank=atr_rank)
+
+    print(f"venue    {rules.name}  ({rules.chain or 'off-chain'})")
+    print(f"settles  {rules.price_feed}")
+    print()
+    print(signal.report())
+    print()
+    print(decision.report())
+    if decision.edge == decision.edge and decision.edge > 0:
+        floor = minimum_viable_stake(decision.edge, decision.price, rules)
+        print(f"\nminimum viable stake at this edge: {floor:,.2f} "
+              f"(3x the {rules.gas_cost_quote:,.2f} gas cost)")
+    return 0
+
+
 def cmd_fetch(args) -> int:
     series = fetch_klines(args.exchange, args.symbol, args.limit)
     path = series.write_csv(args.out)
@@ -369,6 +417,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_args(p)
     _add_config_args(p)
     p.set_defaults(func=cmd_overlap)
+
+    p = sub.add_parser("quote", help="price a live contract market against the signal")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--down", type=float, required=True,
+                   help="the DOWN price the venue is showing, as a percent (84) "
+                        "or a probability (0.84)")
+    p.add_argument("--into-window", type=int, default=5, metavar="SECONDS",
+                   help="seconds elapsed since the window opened (default: 5)")
+    p.add_argument("--overround", type=float, default=0.0,
+                   help="how much the two sides cost above 1.00 together")
+    p.add_argument("--venue", choices=sorted(VENUES), default="trust-wallet-btc-up-down-5m")
+    p.add_argument("--bar", type=int, help="bar index (default: the last one)")
+    p.set_defaults(func=cmd_quote)
 
     p = sub.add_parser("fetch", help="download closed 5m candles to CSV")
     p.add_argument("--exchange", default="binance",

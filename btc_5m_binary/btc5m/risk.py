@@ -149,12 +149,21 @@ class RiskManager:
     # ------------------------------------------------------------------ #
 
     def assess(self, *, bar_index: int, ts: int, p_model: float,
-               atr_rank: float | None = None) -> RiskDecision:
-        """Run all three risk conditions and return a stake, or a refusal."""
+               atr_rank: float | None = None,
+               odds: float | None = None) -> RiskDecision:
+        """Run all three risk conditions and return a stake, or a refusal.
+
+        ``odds`` overrides the configured payoff for this one bet.  On a
+        contract-priced venue the payoff changes with every quote -- a side
+        bought at 0.51 pays 0.96 to 1, one bought at 0.40 pays 1.50 to 1 -- and
+        sizing them all at a nominal fixed payout would misstate Kelly on every
+        bet.
+        """
         self.roll_clock(ts)
         health, derate = self._health_condition(atr_rank)
         limits = self._limit_conditions(bar_index, ts)
-        kelly, stake, stake_pct, sizing = self._stake_condition(p_model, derate)
+        kelly, stake, stake_pct, sizing = self._stake_condition(
+            p_model, derate, odds if odds is not None else self.odds)
 
         conditions = (sizing, *limits, health)
         approved = all(x.passed for x in conditions if x.applicable)
@@ -168,11 +177,13 @@ class RiskManager:
 
     # -- condition 1: stake sizing -------------------------------------- #
 
-    def _stake_condition(self, p_model: float,
-                         derate: float) -> tuple[float, float, float, Check]:
+    def _stake_condition(self, p_model: float, derate: float,
+                         odds: float) -> tuple[float, float, float, Check]:
         c = self.cfg
+        if odds <= 0.0:
+            raise ValueError("odds must be positive")
         # Kelly for a binary payoff: f* = (p*b - (1-p)) / b
-        kelly = (p_model * self.odds - (1.0 - p_model)) / self.odds
+        kelly = (p_model * odds - (1.0 - p_model)) / odds
         fraction = max(0.0, kelly) * c.kelly_fraction * derate
         capped = min(fraction, c.max_stake_pct)
 
@@ -193,7 +204,7 @@ class RiskManager:
         # edges the cap binds at every conviction, which means kelly_fraction
         # is not sizing anything -- worth knowing before tuning it.
         bound_by = "cap" if fraction > c.max_stake_pct else "Kelly"
-        detail = (f"Kelly {kelly:.3f} x {c.kelly_fraction} "
+        detail = (f"Kelly {kelly:.3f} at {odds:.3f}x x {c.kelly_fraction} "
                   + (f"x derate {derate:.2f} " if derate < 1.0 else "")
                   + f"-> {capped:.2%} of bankroll "
                   f"(set by {bound_by}; cap {c.max_stake_pct:.2%}), "

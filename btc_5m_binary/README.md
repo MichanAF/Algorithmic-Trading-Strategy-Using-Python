@@ -65,6 +65,7 @@ menu below from opinion into evidence:
 python -m btc5m gates   --data btc_5m.csv     # what is each gate's vote worth?
 python -m btc5m compare --data btc_5m.csv     # which stack should I run?
 python -m btc5m overlap --data btc_5m.csv     # are the gates actually independent?
+python -m btc5m quote   --data btc_5m.csv --down 51   # price a live market
 ```
 
 From Python:
@@ -517,6 +518,124 @@ config is not a year of trading**. If you want continuous operation, either rais
 
 ---
 
+## Running against a real venue (Trust Wallet, BNB Smart Chain)
+
+The "Bitcoin Up or Down" five-minute markets settle from the Chainlink BTC/USDT
+top-of-book stream. Their rules map onto this engine exactly:
+
+| Venue rule | What it means here |
+|---|---|
+| Start price is the beginning of the range, end price the close of the last 5m candle in it | **One 5-minute bar's return**, which is `horizon_bars: 1` |
+| Candles labelled by open time, so a market ending 8:20 settles on the 8:15 candle's close | Bar `i` predicts `close[i+1]` vs `close[i]`. Already the model. |
+| Equal prices resolve 50-50 | `tie_policy: void`. At BTC precision this is about 1 bar in 13,000. |
+| Chainlink mid-price from Binance top of book | See "price source" below |
+| Quoted as a percentage | `payout_mode: contract_price` |
+
+```bash
+python -m btc5m quote --data btc_5m.csv --down 51 --into-window 8
+```
+
+`configs/trustwallet-bnb-5m.json` is the matching config.
+
+### Break-even is the price you pay
+
+This is the whole game on a contract market, and it is harsher than fixed odds.
+Buy a side at 0.84 and you need to be right 84% of the time to break even.
+
+Our probability model is capped at `prob_cap` (0.64), so there is a hard ceiling
+on what it can ever justify buying:
+
+| Conviction | p_model | Highest price we can pay |
+|---|---|---|
+| 0.60 (the floor) | 0.584 | 0.54 |
+| 0.80 | 0.612 | 0.57 |
+| 1.00 (maximum) | 0.640 | 0.60 |
+
+**We can never buy a side priced above about 0.60.** In the screenshot, DOWN at
+84% is untouchable and always will be. That is not a limitation to tune away: a
+model that claims 85% confidence in a five-minute BTC direction is lying.
+
+### The window clock is the part that will cost you money
+
+These markets trade continuously across the five-minute window, so the quote
+drifts from roughly 50/50 at the open toward the realised answer at the close.
+The screenshot is a market 253 seconds in, with 47 seconds left, sitting at
+84/16. That is not an opportunity. It is the market telling you the move already
+happened while your signal went stale.
+
+Our edge exists at **one moment**: the bar close that opens the window, when the
+quote is still near even and the next five minutes are genuinely unknown. So the
+venue layer adds three vetoes on top of the normal betting conditions:
+
+| Veto | Default | Why |
+|---|---|---|
+| `entry_window` | within 45s of the open | After that, part of the move you are betting on is already history |
+| `time_to_expiry` | at least 60s left | Below that you are betting on the tail of the window, not the window |
+| `market_not_decided` | quote skew ≤ 0.12 | A lopsided quote means the market knows something the signal does not |
+
+Same bar, same stack, two different quotes:
+
+```
+253s in, 84/16 → NO   (entry_window, time_to_expiry, market_not_decided all fail)
+  8s in, 51/49 → YES  buy DOWN at 0.510, edge +0.099
+```
+
+**The opposite side is deliberately not taken.** When the quote is lopsided the
+other side looks cheap, and the tool reports its edge — but taking it means
+betting against your own signal on the strength of a price that moved because
+you were late. That is exactly what a stale signal feels like from the inside.
+
+### Gas is a first-order cost, not a rounding error
+
+Every bet is a BNB Smart Chain transaction. Gas is charged per bet regardless of
+size, so on a small stake it eats the entire edge. The venue layer refuses any
+bet whose expected profit does not cover it, and `minimum_viable_stake()` tells
+you where the floor is:
+
+```
+minimum viable stake at this edge: 4.63 (3x the 0.30 gas cost)
+```
+
+Set `gas_cost_quote` to what you actually pay. Measure it; do not guess. The
+same applies to the **overround**: if UP and DOWN together cost more than 1.00,
+that excess is the venue's margin and you pay it on every bet. Pass it with
+`--overround` and watch what it does to the edge before committing.
+
+### Price source
+
+Settlement uses the Chainlink mid-price (the average of Binance's best bid and
+ask), not the last traded price. For **live** decisions read the mid, via
+`fetch_topofbook_mid()` or the Chainlink stream directly.
+
+For **backtesting** it does not matter. Binance's BTCUSDT spread is about one
+cent, so mid and last differ by at most half a cent, while the median 5-minute
+move is about 32 dollars. Only 0.008% of bars move less than half a spread.
+Ordinary klines are fine for history.
+
+### What is not built: signing and sending
+
+The engine decides. It does not place orders, and the gap between those is real:
+
+- Placing a bet means signing a BNB Smart Chain transaction against the market
+  contract, which needs the contract address and ABI, a funded wallet, and a
+  Web3 connection.
+- **Never paste a seed phrase or private key into this repository, a terminal,
+  a chat, or any tool.** Trust Wallet's recovery phrase controls every asset in
+  the wallet, not just a trading balance. Anything that asks for it is a theft.
+- If you automate this, do it from a **separate hot wallet** holding only what
+  you are prepared to lose, with its key in an environment variable or a
+  hardware signer, never in source control.
+- Latency matters more than it looks. Our entry window is 45 seconds; BSC block
+  time is about 3 seconds and a congested mempool can eat that margin. Measure
+  the round trip before trusting the `entry_window` default.
+
+The honest intermediate step is to run `quote` manually against live markets and
+place the bets by hand for a few weeks. It costs nothing, it tests the part most
+likely to be wrong — whether the quote is ever near even when the signal fires —
+and it produces the data you would need to justify automating anything.
+
+---
+
 ## What these numbers do and do not mean
 
 The bundled data comes from `btc5m.data.synthetic`, a seeded generator. It is
@@ -589,11 +708,12 @@ btc5m/
   backtest.py     bar-by-bar walk with binary settlement and calibration
   attribution.py  what each gate and each stack is actually worth
   redundancy.py   whether the gates and conditions overlap, and by how much
+  venue.py        live contract quotes, the window clock, gas and sizing
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market
-tests/            238 tests
+tests/            259 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -603,7 +723,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 238 passed
+python -m pytest tests/ -q      # 259 passed
 ```
 
 ---
@@ -627,7 +747,8 @@ Presets: `default` / `trend5` (the five-gate stack), `trend4` (the same without
 
 Bundled configs: `configs/default.json` (fixed-odds, 1.90x),
 `configs/conservative.json` (six gates, tighter risk, halts when unhealthy),
-`configs/prediction-market.json` (contract pricing, fees, void on tie).
+`configs/prediction-market.json` (contract pricing, fees, void on tie),
+`configs/trustwallet-bnb-5m.json` (the Trust Wallet BNB Smart Chain market).
 
 Unknown config keys are rejected rather than ignored, so a typo is an error
 instead of a silently ignored setting.

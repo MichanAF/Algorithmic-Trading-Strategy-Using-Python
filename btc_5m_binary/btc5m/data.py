@@ -239,6 +239,37 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
                      close=cols[4], volume=cols[5], symbol=symbol)
 
 
+def fetch_topofbook_mid(symbol: str = "BTCUSDT", timeout: int = 10) -> dict:
+    """Current Binance top-of-book bid, ask and mid.
+
+    This is the quantity the Chainlink BTC/USDT top-of-book stream publishes and
+    the one venues settle against, so a live decision should read it rather than
+    the last traded price.
+
+    For *backtesting* the distinction does not matter: Binance's BTCUSDT spread
+    is about one cent, so mid and last differ by at most half a cent, while the
+    median five-minute move is tens of dollars.  Only about one bar in thirteen
+    thousand moves less than half a spread.  Use klines for history and this for
+    the live quote.
+    """
+    url = f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}"
+    request = urllib.request.Request(url, headers={"User-Agent": "btc5m/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"could not reach Binance for the top of book ({exc}). Exchange "
+            "endpoints are often blocked by network policy; read the mid from "
+            "the Chainlink stream instead."
+        ) from exc
+    bid, ask = float(payload["bidPrice"]), float(payload["askPrice"])
+    return {"symbol": symbol, "bid": bid, "ask": ask, "mid": (bid + ask) / 2.0,
+            "spread": ask - bid,
+            "spread_bps": (ask - bid) / ((bid + ask) / 2.0) * 10_000.0,
+            "observed_ts": int(datetime.now(tz=timezone.utc).timestamp())}
+
+
 # --------------------------------------------------------------------------- #
 # synthetic bars
 # --------------------------------------------------------------------------- #

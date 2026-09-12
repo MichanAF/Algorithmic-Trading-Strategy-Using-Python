@@ -31,6 +31,8 @@ from .redundancy import (collect_verdicts, condition_bindings, full_report,
                          verdict_overlap)
 from .risk import RiskDecision, RiskManager, SettledBet
 from .signal import Signal, SignalEngine
+from .venue import (TRUST_WALLET_BTC_5M, VENUES, MarketDecision, MarketQuote,
+                    VenueRules, evaluate_market, minimum_viable_stake)
 
 __version__ = "1.0.0"
 
@@ -46,6 +48,8 @@ __all__ = [
     "gate_edge", "stack_edge", "compare_stacks", "render_table", "EdgeStats",
     "structural_overlap", "verdict_overlap", "marginal_value", "leave_one_out",
     "condition_bindings", "collect_verdicts", "full_report",
+    "VenueRules", "MarketQuote", "MarketDecision", "evaluate_market",
+    "minimum_viable_stake", "VENUES", "TRUST_WALLET_BTC_5M",
     "quickstart",
 ]
 
