@@ -193,9 +193,21 @@ class DataIntegrityGate(Gate):
 class VolatilityRegimeGate(Gate):
     """Veto -- is there enough movement to pay for the spread, but not chaos?
 
-    Below the floor, the five-minute move is smaller than your transaction cost
-    and direction barely matters.  Above the ceiling, the move is news-driven
-    and technical structure stops predicting anything.  You want the middle.
+    The floor assumes you pay a cost proportional to being barely right: on spot
+    or perps, a move smaller than the spread you cross loses money even when the
+    direction is correct.
+
+    That assumption does NOT hold for a yes/no contract, and this is the gate to
+    drop there.  On a binary market any non-zero move resolves the bet and you
+    pay a fixed contract price, not a spread.  Measured over 1,042 unseen days,
+    accuracy is flat across the whole volatility range -- 57.9% below the floor,
+    58.2% inside the band, 57.1% above the ceiling, against standard errors near
+    2.5% -- so on a contract market the band only discards signals.  Opening it
+    up doubled signal frequency (3.8 to 8.0 a day) and slightly *raised*
+    accuracy.  See configs/trustwallet-bnb-5m.json, which leaves this gate out.
+
+    Extreme volatility is still worth standing down for, but that is a tail
+    guard and belongs in the risk layer, as ``risk.atr_shock_rank``.
     """
 
     name = "volatility_regime"

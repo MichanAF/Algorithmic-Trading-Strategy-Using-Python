@@ -258,3 +258,114 @@ def test_a_flat_signal_produces_no_bet(rig):
     assert not decision.approved
     assert not condition(decision, "gate_signal").passed
     assert decision.answer == "NO"
+
+
+# --------------------------------------------------------------------------- #
+# the one-line answer
+# --------------------------------------------------------------------------- #
+
+def test_brief_names_the_side_the_price_and_the_stake(rig):
+    cfg, _, fs, engine, index = rig
+    signal = engine.evaluate(fs, index)
+    window = int(fs.series.ts[index])
+    risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
+    decision = evaluate_market(signal, quote_at(6, down=49, window=window),
+                               cfg, risk=risk)
+    line = decision.brief()
+    assert line.startswith(("UP", "DOWN"))
+    assert "buy at" in line and "stake" in line and "left" in line
+    assert "\n" not in line
+
+
+def test_brief_prefers_the_informative_reason_over_the_first_one(rig):
+    """Late and decided are the same event; "the market knows" is the useful half."""
+    cfg, _, fs, engine, index = rig
+    window = int(fs.series.ts[index])
+    quote = quote_at(253, down=84, window=window)
+
+    # Several conditions fail at once, and the clock ones come first in order.
+    fresh_signal = engine.evaluate(fs, index)
+    decision = evaluate_market(fresh_signal, quote, cfg)
+    assert {"entry_window", "time_to_expiry", "market_not_decided"} <= set(
+        decision.blocked_by)
+    assert "market already decided" in decision.brief()
+
+    # And the same when the signal itself is stale, which is what the CLI does:
+    # it decides as of the moment the quote was observed.
+    stale_signal = engine.evaluate(fs, index, now_ts=quote.observed_ts)
+    assert not stale_signal.tradable
+    stale = evaluate_market(stale_signal, quote, cfg)
+    assert "gate_signal" in stale.blocked_by
+    assert "market already decided" in stale.brief()
+
+
+def test_brief_reports_the_price_when_that_is_what_blocked_it(rig):
+    cfg, _, fs, engine, index = rig
+    signal = engine.evaluate(fs, index)
+    window = int(fs.series.ts[index])
+    decision = evaluate_market(signal, quote_at(6, down=58, window=window), cfg)
+    line = decision.brief()
+    assert "too high" in line
+    assert "nan" not in line.lower()
+
+
+def test_brief_names_the_blocking_gate_when_there_is_no_side(rig):
+    cfg, _, fs, engine, _ = rig
+    flat_index = next(i for i in range(engine.warmup_bars(fs), 3000)
+                      if engine.evaluate(fs, i).side == FLAT)
+    signal = engine.evaluate(fs, flat_index)
+    window = int(fs.series.ts[flat_index])
+    decision = evaluate_market(signal, quote_at(6, window=window), cfg)
+    line = decision.brief()
+    assert line.startswith("NO BET")
+    assert "nan" not in line.lower()
+    # Should name a real gate or condition, not a generic refusal.
+    assert decision.signal_reason
+    assert decision.signal_reason in line
+
+
+def test_signal_brief_is_one_line_either_way(rig):
+    _, _, fs, engine, index = rig
+    tradable = engine.evaluate(fs, index).brief()
+    assert tradable.startswith(("UP", "DOWN"))
+    assert "conviction" in tradable
+    blocked = next(engine.evaluate(fs, i).brief()
+                   for i in range(engine.warmup_bars(fs), 3000)
+                   if not engine.evaluate(fs, i).tradable)
+    assert blocked.startswith("NO BET")
+    assert "\n" not in blocked
+
+
+# --------------------------------------------------------------------------- #
+# no volatility band on a contract market
+# --------------------------------------------------------------------------- #
+
+def test_the_venue_config_has_no_volatility_gate():
+    """A yes/no bet crosses no spread, so a move-size floor buys nothing.
+
+    Measured over 1,042 unseen days, accuracy is the same either side of the
+    band. The tail guard lives in risk.atr_shock_rank instead.
+    """
+    cfg = load_config("configs/trustwallet-bnb-5m.json")
+    assert "volatility_regime" not in cfg.gate_stack
+    assert cfg.risk.atr_shock_rank < 1.0
+    assert 3 <= len(cfg.gate_stack) <= 5
+
+
+def test_the_volatility_shock_veto_still_works_without_the_gate():
+    cfg = load_config("configs/trustwallet-bnb-5m.json")
+    risk = RiskManager(cfg.risk, cfg.break_even_probability(), cfg.payoff_odds())
+    calm = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.5)
+    shock = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.999)
+    assert calm.approved
+    assert not shock.approved
+    assert "strategy_health" in shock.blocked_by
+
+
+def test_configs_may_carry_underscore_notes(tmp_path):
+    import json
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"_why": "a note for the reader",
+                             "betting": {"_note": "also fine", "net_payout": 0.93}}))
+    cfg = load_config(p)
+    assert cfg.betting.net_payout == pytest.approx(0.93)

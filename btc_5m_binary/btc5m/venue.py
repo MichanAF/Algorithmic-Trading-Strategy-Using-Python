@@ -174,6 +174,7 @@ class MarketDecision:
     approved: bool = False
     blocked_by: tuple[str, ...] = field(default_factory=tuple)
     other_side_edge: float | None = None
+    signal_reason: str = ""
 
     @property
     def answer(self) -> str:
@@ -183,6 +184,36 @@ class MarketDecision:
     def expected_profit(self) -> float:
         """Expected profit on this bet in quote currency, after gas."""
         return self.contracts * self.expected_value_per_contract - self.gas_cost
+
+    # Most informative reason first, not the one that happened to fail first.
+    # A stale signal and a market that has already moved are the same event seen
+    # from two sides, and "the market already decided" is the useful half.
+    _REASON_ORDER = ("market_not_decided", "entry_window", "time_to_expiry",
+                     "priced_edge", "gas_cost", "gate_signal")
+
+    def brief(self) -> str:
+        """One line, for the forty-five seconds you actually have to decide."""
+        if self.approved:
+            return (f"{direction_name(self.side)} - buy at {self.price:.3f} - "
+                    f"stake {self.stake:,.2f} - edge {self.edge:+.3f} - "
+                    f"{self.quote.seconds_to_expiry}s left")
+        reasons = {
+            "gate_signal": self.signal_reason or "no signal",
+            "entry_window": f"too late ({self.quote.seconds_into_window}s into the window)",
+            "time_to_expiry": f"only {self.quote.seconds_to_expiry}s left",
+            "market_not_decided": f"market already decided (skew {self.quote.skew:.2f})",
+            "priced_edge": f"price {self.price:.3f} too high for p {self.p_model:.3f}",
+            "gas_cost": "stake too small to cover gas",
+        }
+        if self.side == FLAT:
+            # No side was proposed, so nothing downstream has a price to judge.
+            return f"NO BET - {self.signal_reason or 'no signal'}"
+        blocked = set(self.blocked_by)
+        for label in self._REASON_ORDER:
+            if label in blocked:
+                return f"NO BET - {reasons[label]}"
+        first = self.blocked_by[0] if self.blocked_by else "refused"
+        return f"NO BET - {reasons.get(first, first)}"
 
     def report(self) -> str:
         lines = [
@@ -268,6 +299,7 @@ def evaluate_market(signal: Signal, quote: MarketQuote, cfg: StrategyConfig,
         expected_value_per_contract=ev_per_contract,
         conditions=tuple(conditions), approved=approved, blocked_by=blocked,
         other_side_edge=other_edge, gas_cost=rules.gas_cost_quote,
+        signal_reason=("" if signal.tradable else signal._first_reason()),
     )
     if not approved or risk is None:
         return decision

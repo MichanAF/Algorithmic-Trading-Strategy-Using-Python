@@ -105,7 +105,7 @@ The **default stack is five gates**, two vetoes and three directional:
 | # | Gate | Kind | The question it answers |
 |---|---|---|---|
 | 1 | `data_integrity` | veto | Is the feed trustworthy? No gapped bar, stuck price, blown-out spread or zero-volume bar. |
-| 2 | `volatility_regime` | veto | Is there enough movement to pay for the spread, without being chaos? ATR percentile inside a band, and above a floor in basis points. |
+| 2 | `volatility_regime` | veto | Is there enough movement to pay for the spread, without being chaos? ATR percentile inside a band, and above a floor in basis points. **Drop this one on a yes/no contract** — see below. |
 | 3 | `trend_alignment` | directional | Which way, and does the 15-minute chart agree? EMA stack, higher-timeframe slope, regression fit, VWAP side. |
 | 4 | `persistence` | directional | Does this regime extend moves or reverse them? Variance ratio above 1, ADX above a floor, +DI vs -DI for the side. |
 | 5 | `participation` | directional | Is real volume behind it? Above median, below blow-off, with on-balance-volume agreeing. |
@@ -141,6 +141,23 @@ trend as a third timeframe, pivot or opening-range position, daily VWAP.
 
 The variance ratio is the cheap stand-in for a rolling Hurst exponent. Above 1,
 moves extend; below 1, following them is paying the spread to be wrong.
+
+**`volatility_regime` does not belong on a yes/no contract.** Its floor exists
+because on spot or perps a move smaller than the spread you cross loses money
+even when the direction was right. A binary bet crosses no spread: you pay a
+contract price, and any non-zero move resolves it. Measured over 1,042 unseen
+days, accuracy is flat across the entire volatility range:
+
+| ATR percentile | Signals | Accuracy |
+|---|---|---|
+| below the 0.30 floor | 689 | 57.9% |
+| inside the 0.30–0.92 band | 1,699 | 58.2% |
+| above the 0.92 ceiling | 496 | 57.1% |
+
+Standard errors are around 2.5%, so those are the same number. Removing the gate
+doubled signal frequency and slightly raised accuracy. Extreme volatility is
+still worth standing down for, but that is a tail guard and it already lives in
+the risk layer as `atr_shock_rank`.
 
 ### Momentum and thrust
 | Gate | Factors |
@@ -535,7 +552,41 @@ top-of-book stream. Their rules map onto this engine exactly:
 python -m btc5m quote --data btc_5m.csv --down 51 --into-window 8
 ```
 
-`configs/trustwallet-bnb-5m.json` is the matching config.
+`configs/trustwallet-bnb-5m.json` is the matching config. Add `--brief` for a
+single line, which is what you actually want in the seconds after a candle
+closes:
+
+```
+DOWN - buy at 0.490 - stake 15.00 - edge +0.119 - 294s left
+NO BET - market already decided (skew 0.34)
+NO BET - price 0.580 too high for p 0.609
+NO BET - participation: obv_agrees_with_candle
+```
+
+### One gate comes out for this venue
+
+The venue config runs **four** gates, not five: `volatility_regime` is gone.
+Its floor is there to make sure a move clears the spread you cross, and a yes/no
+contract crosses no spread — any non-zero move resolves the bet. Accuracy either
+side of the band is identical (see "The gate menu" above), so the gate was only
+discarding signals. Out of sample:
+
+| Config | Signals/day | Accuracy |
+|---|---|---|
+| five gates, band as shipped | 3.83 | 58.05% |
+| **four gates, no band** | **8.06** | **58.70%** |
+
+More than twice the signals at slightly better accuracy. The tail guard against
+a volatility shock is unaffected: it lives in `risk.atr_shock_rank`.
+
+The same argument applies to `configs/default.json`, which still ships the band
+because every number quoted elsewhere in this README was measured with it. To
+drop it there too:
+
+```bash
+python -m btc5m backtest --data btc_5m.csv \
+  --gates data_integrity,trend_alignment,persistence,participation
+```
 
 ### Break-even is the price you pay
 
@@ -713,7 +764,7 @@ btc5m/
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market
-tests/            259 tests
+tests/            267 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -723,7 +774,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 259 passed
+python -m pytest tests/ -q      # 267 passed
 ```
 
 ---

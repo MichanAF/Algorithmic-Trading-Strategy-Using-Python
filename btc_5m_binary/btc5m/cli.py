@@ -220,9 +220,13 @@ def cmd_signal(args) -> int:
         raise SystemExit(f"bar {index} is inside the {warmup}-bar warm-up; "
                          f"pick a later bar or supply more history")
 
+    signal = engine.evaluate(fs, index)
+    if args.brief:
+        print(signal.brief())
+        return 0
+
     print(f"{series.symbol}  bar {index}  closed {series.time_at(index):%Y-%m-%d %H:%M} UTC")
     print(f"gate stack: {' -> '.join(g.name for g in engine.stack)}\n")
-    signal = engine.evaluate(fs, index)
     print(signal.report())
 
     if signal.tradable:
@@ -315,6 +319,9 @@ def cmd_quote(args) -> int:
     atr_rank = float(fs.values["atr_rank"][index])
     decision = evaluate_market(signal, quote, cfg, risk=risk, rules=rules,
                                atr_rank=atr_rank)
+    if args.brief:
+        print(decision.brief())
+        return 0
 
     print(f"venue    {rules.name}  ({rules.chain or 'off-chain'})")
     print(f"settles  {rules.price_feed}")
@@ -399,6 +406,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_args(p)
     _add_config_args(p)
     p.add_argument("--bar", type=int, help="bar index (default: the last one)")
+    p.add_argument("--brief", action="store_true",
+                   help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_signal)
 
     p = sub.add_parser("gates", help="score every gate's vote on your data")
@@ -430,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="how much the two sides cost above 1.00 together")
     p.add_argument("--venue", choices=sorted(VENUES), default="trust-wallet-btc-up-down-5m")
     p.add_argument("--bar", type=int, help="bar index (default: the last one)")
+    p.add_argument("--brief", action="store_true",
+                   help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_quote)
 
     p = sub.add_parser("fetch", help="download closed 5m candles to CSV")

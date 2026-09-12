@@ -52,6 +52,29 @@ class Signal:
         """The yes/no the strategy was asked for."""
         return "YES" if self.tradable else "NO"
 
+    def brief(self) -> str:
+        """One line: the yes/no answer and, if no, the single reason.
+
+        The whole bet is one bit, decided in the seconds after a candle closes.
+        Everything else in this module exists to justify this line.
+        """
+        if self.tradable:
+            return (f"{self.side_name} - p {self.p_model:.3f} - "
+                    f"conviction {self.conviction:.2f}")
+        reason = self._first_reason()
+        return f"NO BET - {reason}"
+
+    def _first_reason(self) -> str:
+        """The earliest thing that stopped the bar, named as a person would."""
+        for gate in self.gate_results:
+            if not gate.passed:
+                failed = gate.failed_checks
+                return (f"{gate.name}: {failed[0].label}" if failed else gate.name)
+        for condition in self.conditions:
+            if condition.applicable and not condition.passed:
+                return condition.label
+        return "no side proposed"
+
     def report(self) -> str:
         """Multi-line trace: every gate, then every betting condition."""
         lines = [

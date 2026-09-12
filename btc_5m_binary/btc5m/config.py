@@ -385,6 +385,9 @@ def _merge(node: Any, overrides: dict, path: str = "") -> Any:
     known = {f.name: f for f in fields(node)}
     for key, value in overrides.items():
         where = f"{path}{key}"
+        # Keys starting with an underscore are notes for whoever reads the file.
+        if key.startswith("_"):
+            continue
         if key not in known:
             raise ValueError(f"unknown config key {where!r}")
         current = getattr(node, key)
