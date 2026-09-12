@@ -103,16 +103,44 @@ def test_a_break_even_bet_has_zero_expected_value():
 
 
 def test_a_payout_that_cannot_cover_fees_is_rejected():
-    cfg = config_from_dict({"betting": {"net_payout": 0.001, "fee_bps": 100.0}})
+    """Caught when the config is built, not later when a bet is priced."""
     with pytest.raises(ValueError, match="net_payout"):
-        cfg.break_even_probability()
+        config_from_dict({"betting": {"net_payout": 0.001, "fee_bps": 100.0}})
 
 
 def test_an_out_of_range_contract_price_is_rejected():
-    cfg = config_from_dict({"betting": {"payout_mode": "contract_price",
-                                        "contract_price": 0.999, "fee_bps": 500.0}})
     with pytest.raises(ValueError, match="contract_price"):
-        cfg.break_even_probability()
+        config_from_dict({"betting": {"payout_mode": "contract_price",
+                                      "contract_price": 0.999, "fee_bps": 500.0}})
+
+
+def test_a_payout_no_conviction_can_clear_is_rejected():
+    """prob_cap below break-even means the strategy could never bet at all."""
+    with pytest.raises(ValueError, match="never bet"):
+        config_from_dict({"betting": {"net_payout": 0.60, "prob_cap": 0.55}})
+
+
+def test_implied_conviction_floor_translates_the_edge_requirement():
+    cfg = config_from_dict()
+    floor = cfg.implied_conviction_floor()
+    assert floor is not None
+    # At exactly the floor the edge requirement is met; just below it is not.
+    from btc5m.signal import SignalEngine
+    engine = SignalEngine(cfg)
+    at = engine._probability(floor) - cfg.break_even_probability()
+    below = engine._probability(floor * 0.95) - cfg.break_even_probability()
+    assert at >= cfg.betting.required_edge - 1e-9
+    assert below < cfg.betting.required_edge
+
+
+def test_binding_condition_flips_when_the_payout_worsens():
+    """The two conditions are one threshold in two units; the payout picks which."""
+    generous = config_from_dict({"betting": {"net_payout": 0.95}})
+    stingy = config_from_dict({"betting": {"net_payout": 0.80}})
+    assert generous.binding_betting_condition() == "min_conviction"
+    assert stingy.binding_betting_condition() == "required_edge"
+    assert (stingy.implied_conviction_floor()
+            > generous.implied_conviction_floor())
 
 
 # --------------------------------------------------------------------------- #

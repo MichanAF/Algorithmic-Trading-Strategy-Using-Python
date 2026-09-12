@@ -8,6 +8,11 @@ strategy reduces to two decisions: whether to bet, and how much.
     betting      -> is that opinion worth money at the offered payout?
     risk         -> how much, and should we be betting at all right now?
 
+Two questions the module answers about itself: ``attribution`` measures what each
+gate and stack is worth on your data, and ``redundancy`` measures whether they
+overlap -- a stack is only as selective as the number of independent questions it
+asks.
+
 Start with ``btc5m.quickstart`` or the command line: ``python -m btc5m --help``.
 """
 
@@ -21,6 +26,9 @@ from .config import (DEFAULT_GATE_STACK, BettingConfig, RiskConfig,
 from .data import BarSeries, fetch_klines, load_csv, synthetic
 from .features import FeatureSet, build_features
 from .gates import GATE_REGISTRY, Check, Gate, GateResult, build_stack
+from .redundancy import (collect_verdicts, condition_bindings, full_report,
+                         leave_one_out, marginal_value, structural_overlap,
+                         verdict_overlap)
 from .risk import RiskDecision, RiskManager, SettledBet
 from .signal import Signal, SignalEngine
 
@@ -36,6 +44,8 @@ __all__ = [
     "RiskManager", "RiskDecision", "SettledBet",
     "run_backtest", "BacktestResult",
     "gate_edge", "stack_edge", "compare_stacks", "render_table", "EdgeStats",
+    "structural_overlap", "verdict_overlap", "marginal_value", "leave_one_out",
+    "condition_bindings", "collect_verdicts", "full_report",
     "quickstart",
 ]
 

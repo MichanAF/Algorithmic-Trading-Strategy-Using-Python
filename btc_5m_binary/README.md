@@ -64,6 +64,7 @@ menu below from opinion into evidence:
 ```bash
 python -m btc5m gates   --data btc_5m.csv     # what is each gate's vote worth?
 python -m btc5m compare --data btc_5m.csv     # which stack should I run?
+python -m btc5m overlap --data btc_5m.csv     # are the gates actually independent?
 ```
 
 From Python:
@@ -238,6 +239,12 @@ support it.
 Default `required_edge` is 0.03. That margin is not decoration: it is the buffer
 against `prob_cap` being optimistic, which it usually is.
 
+**This condition and condition 1 are not independent.** Both are thresholds on
+conviction, and at the default payout the conviction floor is the tighter of the
+two, so this one never refuses a bet on its own. It takes over below about 1.83x.
+See "Overlap analysis" for the measurement and `effective_conviction_floor()` for
+the single number that actually applies.
+
 ### 3. Timing
 The signal must be fresh (`max_signal_age_seconds`, default 45) and there must be
 enough time left before expiry for the move to happen
@@ -346,6 +353,170 @@ above break-even. Under +2, the gate has shown you nothing yet.
 
 ---
 
+## Overlap analysis: are the gates asking different questions?
+
+A stack of five gates is only as selective as the number of **independent**
+questions it asks. Two gates that fire together for the same underlying reason
+do not double the evidence. They halve the signal count while adding nothing,
+and make the stack look more confirmed than it is.
+
+```bash
+python -m btc5m overlap --data btc_5m.csv
+```
+
+Four measurements, weakest to strongest. The third is the one that decides.
+
+| | What it asks |
+|---|---|
+| **Structural** | Do two gates read the same feature? A hard floor: gates sharing an input cannot be independent. |
+| **Verdict** | Do they pass on the same bars, and vote the same way? Gates can share no features and still be near-duplicates. |
+| **Marginal value** | Among bars where every *other* gate already agreed, does this gate's verdict still separate winners from losers? |
+| **Leave-one-out** | What the whole stack does without each gate. |
+
+### What it found, and what changed as a result
+
+| Overlap | Finding | Action |
+|---|---|---|
+| Gate inputs | The five default gates read **disjoint** feature sets | none needed |
+| `trend_alignment` vs `persistence` | Independent on *when* they fire (phi +0.07) but **99% agreement on direction** | documented: read this stack as two direction votes plus one regime filter, not three votes |
+| `participation` marginal value | **+1.5 points, z = +1.9** — no information once the others agreed | added the `trend4` preset without it |
+| Betting conditions 1 and 2 | `priced_edge` **never binds** at default settings | added `effective_conviction_floor()`; the report now names the single real threshold |
+| Betting condition 3 | `timing` is **not testable** on historical bars | reported as such rather than counted as passing |
+| Kelly vs stake cap | The cap binds at **every** allowed conviction, so `kelly_fraction` never sizes a bet | the stake check now names which half bound |
+| `daily_loss_limit` vs `max_drawdown` | The halt flag made **both** fail together, double-counting every post-halt bar | fixed: the halt belongs to `max_drawdown` alone |
+| Conviction vs outcome | **Non-monotone**: the top bucket is the worst | documented below; do not trust `prob_cap` |
+
+Two of these deserve spelling out.
+
+**Betting conditions 1 and 2 are one condition.** Both are thresholds on the
+same scalar, because `p_model` is a monotone function of conviction. At the
+default 1.90x payout the edge requirement is satisfied from conviction 0.402
+upward, while the conviction floor already demands 0.600 — so condition 2 can
+never be the reason a bet is refused. They are still both worth keeping, because
+**which one binds moves with the payout**: below about 1.83x the edge requirement
+takes over and becomes the tighter test. But nobody should read them as two
+independent safeguards. The report now prints the single effective floor.
+
+**`participation` does not earn its slot.** Its directional verdict adds nothing
+once the other gates agree, and it removes about 80% of the remaining signals to
+buy roughly 1.5 points of accuracy. Sized so each stack risks the same fraction
+of bankroll per day, over the same year:
+
+| Stack | Per-bet stake | Bets/day | Hit rate | Max drawdown | Sharpe |
+|---|---|---|---|---|---|
+| 5 gates (default) | 1.05% | 3.7 | 57.47% | 15.85% | 3.61 |
+| **4 gates, no `participation`** | 0.18% | 18.5 | 56.36% | **6.95%** | **6.18** |
+| 3 gates (`core3`) | 0.07% | 43.7 | 54.21% | 5.14% | 4.01 |
+
+Same answer when each stack is sized at its own quarter-Kelly instead. The
+`trend4` preset is that four-gate stack. The default is left as it is because
+this is one synthetic fixture and the finding sits close to the significance
+bar — but measure it on your own data before keeping the fifth gate.
+
+### The trap this analysis walked into first
+
+Comparing stacks by accuracy alone reverses the answer, and so does comparing
+them by raw profit. At a **fixed** 2% stake, the loose stacks all hit the 20%
+drawdown halt within days, because 43 bets a day at 2% risks most of the
+bankroll daily. The first comparison run looked like this:
+
+| Stack | Bets placed | Net P&L | Halted on |
+|---|---|---|---|
+| 5 gates | 730 | +36,611 | day 204 of 365 |
+| 4 gates | 297 | +6,196 | day 24 |
+| 3 gates | 148 | +1,355 | day 9 |
+
+Read at face value that says selectivity wins by a mile. It does not. All three
+tripped the halt, and the looser ones tripped it in the **first few weeks** — so
+those numbers mostly measure how fast each stack hit a risk limit calibrated for
+about four bets a day, not how good the stack is. At 2% a bet, 43 bets a day puts
+most of the bankroll at risk daily; the three-gate stack was finished on day 9.
+
+**Stake and signal frequency have to be varied together.** That is itself an
+overlap, between the betting layer and the risk layer, and it is the most
+expensive one in this repository: it inverts the conclusion.
+
+### Read `z`, not the headline
+
+The `verdict` column is deliberately conservative. Under 100 joint passes, or
+under 50 bars in either bucket, it reports "too few to judge" rather than a
+number. A gate that looks brilliant on 57 signals in a year has told you
+nothing.
+
+---
+
+## One-year backtest
+
+The default five-gate stack, default risk settings, 105,120 bars (365 days) of
+the bundled fixture at seed 11:
+
+```
+  bars evaluated        104,832
+  tradable signals      1,394
+  bets placed           730 (2.01/day)
+  wins / losses / void  429 / 301 / 0
+  hit rate              58.77% +/- 1.82%
+  break-even needed     52.63% (payout 0.900x)
+  edge vs break-even    +6.14%   [significant at 2 s.e.]
+  net P&L               +36,610.70 (+366.11% on 10,000)
+  max drawdown          20.69%
+  longest loss streak   6
+  annualised Sharpe     3.37
+  HALTED                drawdown 20.69% hit the 20.00% limit
+```
+
+Reproduce with:
+
+```bash
+python -m btc5m backtest --synthetic 105120 --seed 11
+```
+
+**Do not read the +366% as a return forecast.** Three reasons, in order of size:
+the data is synthetic; the stack was selected on this same fixture; and the run
+**halted partway through the year**, so the figure is not even a full year of
+this strategy. The honest numbers from this run are the hit rate against
+break-even, and the two problems below.
+
+### Problem 1: conviction does not predict accuracy
+
+| Conviction bucket | Bets | Claimed | Realised | P&L |
+|---|---|---|---|---|
+| 0.60 - 0.70 | 315 | 59.1% | 58.4% | +9,526 |
+| 0.70 - 0.80 | 230 | 60.4% | **63.9%** | +26,797 |
+| 0.80 - 0.90 | 123 | 61.9% | 56.1% | +2,427 |
+| 0.90 - 1.00 | 62 | 63.3% | **46.8%** | **-2,138** |
+
+The most confident bucket is the **only losing one**, and it is 16 points below
+what the model claimed. The relationship is not weakly calibrated, it is
+non-monotone: past about 0.8, more conviction is worse.
+
+The likely cause is the same one that sank `momentum_thrust`. Maximum conviction
+means every gate is maximally extended at once — steep slope, high ADX, heavy
+volume — and that is a late-stage trend, which reverts. So `prob_cap` is a
+fiction at the top of its range.
+
+It is not currently costing money, for a reason worth noticing: because the
+stake cap binds at every conviction, every bet is the same size, so the strategy
+does **not** bet more on its worst bucket. The 2% cap is quietly doing the job
+`prob_cap` was supposed to do. If you raise the cap so Kelly starts sizing, that
+protection disappears and this miscalibration starts allocating real capital to
+the worst bets. Fix the calibration before touching the cap.
+
+### Problem 2: the drawdown halt is not a year-long setting
+
+The run stopped betting on **day 204 of 365**, having taken the bankroll from
+10,000 to a peak of 58,774 and then given back 20.69% of that peak. The last 160
+days produced 605 signals and not a single bet.
+
+Stakes scale with the bankroll, so on any compounding run a fixed percentage
+drawdown measured from peak equity will eventually fire. That is the control
+working as designed, and resuming should be a person's decision rather than
+something the engine does quietly. But it means **a one-year backtest of this
+config is not a year of trading**. If you want continuous operation, either raise
+`max_drawdown_pct`, or size from a fixed notional rather than the live bankroll.
+
+---
+
 ## What these numbers do and do not mean
 
 The bundled data comes from `btc5m.data.synthetic`, a seeded generator. It is
@@ -387,8 +558,10 @@ The engine will not stop you from doing this badly. In order:
    under a few months cannot distinguish a 2-point edge from noise.
 2. **Set your real payout and fees** in the config. Nothing else matters until
    this is right.
-3. **Run `gates` and `compare`** on your data. Do not assume the default stack
-   transfers. If `momentum_thrust` scores well on your history, use it.
+3. **Run `gates`, `compare` and `overlap`** on your data. Do not assume the
+   default stack transfers. If `momentum_thrust` scores well on your history, use
+   it. If `overlap` says a gate adds no information, drop it and re-measure.
+   Vary the stake with the signal frequency, or the comparison will lie to you.
 4. **Check the calibration table**, not the P&L line. If realised hit rate does
    not rise with conviction, the conviction score is noise and `prob_cap` is a
    fiction.
@@ -415,11 +588,12 @@ btc5m/
   risk.py         the three risk conditions, bankroll and exposure state
   backtest.py     bar-by-bar walk with binary settlement and calibration
   attribution.py  what each gate and each stack is actually worth
+  redundancy.py   whether the gates and conditions overlap, and by how much
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market
-tests/            204 tests
+tests/            238 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -429,7 +603,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests/ -q      # 238 passed
 ```
 
 ---
@@ -445,6 +619,11 @@ python -m btc5m backtest --data btc_5m.csv \
   --set betting.required_edge=0.04 \
   --set risk.max_stake_pct=0.01
 ```
+
+Presets: `default` / `trend5` (the five-gate stack), `trend4` (the same without
+`participation`, best risk-adjusted result on the fixture), `core3`,
+`trend6-session`, `thrust`, `meanrev`, `everything`. List them with
+`python -m btc5m menu`.
 
 Bundled configs: `configs/default.json` (fixed-odds, 1.90x),
 `configs/conservative.json` (six gates, tighter risk, halts when unhealthy),

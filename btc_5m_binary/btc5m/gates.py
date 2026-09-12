@@ -378,6 +378,15 @@ class ParticipationGate(Gate):
     A drift on thin volume reverses as soon as one real order arrives.  The
     upper bound matters just as much: a bar at six times median volume is a
     blow-off, and blow-offs are where continuation bets go to die.
+
+    Overlap note, and it is not flattering: on the bundled fixture this gate's
+    verdict adds no information once the other gates have agreed (separation
+    +1.5 points, z = +1.9, under the bar).  It removes about 80% of the
+    remaining signals to buy roughly 1.5 points of accuracy, which is a losing
+    trade on a risk-adjusted basis -- see the `trend4` preset and README
+    "Overlap analysis".  Kept in the menu because volume confirmation may well
+    earn its place on real data with real order flow; measure it with
+    `btc5m overlap` before trusting it.
     """
 
     name = "participation"
@@ -449,6 +458,13 @@ class PersistenceGate(Gate):
     The variance ratio is the honest test of whether momentum is the right tool
     right now.  Above 1, five-minute moves extend.  Below 1, following them is
     paying the spread to be wrong.
+
+    Overlap note: its +DI/-DI direction agrees with ``trend_alignment`` on about
+    99% of the bars where both pass, so this gate is not a second independent
+    opinion on *which way*.  What it adds is the regime test -- the variance
+    ratio and ADX floors -- and that does carry information the trend gate does
+    not (measured separation +4.8 points, z = +5.2).  Read a stack containing
+    both as two direction votes and one regime filter, not three votes.
     """
 
     name = "persistence"

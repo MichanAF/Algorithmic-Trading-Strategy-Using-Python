@@ -189,9 +189,14 @@ class RiskManager:
         ok = (kelly > 0.0 and stake >= c.min_stake
               and stake <= affordable + 1e-9
               and stake + self.exposure <= self.bankroll)
+        # Say which of the two halves actually set the size.  At realistic
+        # edges the cap binds at every conviction, which means kelly_fraction
+        # is not sizing anything -- worth knowing before tuning it.
+        bound_by = "cap" if fraction > c.max_stake_pct else "Kelly"
         detail = (f"Kelly {kelly:.3f} x {c.kelly_fraction} "
                   + (f"x derate {derate:.2f} " if derate < 1.0 else "")
-                  + f"-> {capped:.2%} of bankroll (cap {c.max_stake_pct:.2%}), "
+                  + f"-> {capped:.2%} of bankroll "
+                  f"(set by {bound_by}; cap {c.max_stake_pct:.2%}), "
                   f"stake {stake:,.2f}")
         if kelly <= 0.0:
             detail = f"Kelly {kelly:.3f} <= 0: no edge at these odds"
@@ -206,11 +211,15 @@ class RiskManager:
         c = self.cfg
         daily_budget = self.day_start_bankroll * c.daily_loss_limit_pct
         bets_this_hour = len(self.recent_bet_ts)
+        # The halt flag belongs to max_drawdown alone.  Folding it into the daily
+        # check as well made both conditions fail on the same bars, so the
+        # blocker histogram double-counted every post-halt bar and neither
+        # number meant anything on its own.
         return (
-            Check("daily_loss_limit", not self.halted and self.day_pnl > -daily_budget,
+            Check("daily_loss_limit", self.day_pnl > -daily_budget,
                   f"day P&L {self.day_pnl:+,.2f} vs limit "
                   f"-{daily_budget:,.2f} ({c.daily_loss_limit_pct:.1%})"),
-            Check("max_drawdown", self.drawdown < c.max_drawdown_pct,
+            Check("max_drawdown", not self.halted and self.drawdown < c.max_drawdown_pct,
                   f"drawdown {self.drawdown:.2%} < {c.max_drawdown_pct:.2%}"
                   + (f" [HALTED: {self.halt_reason}]" if self.halted else "")),
             Check("loss_streak_cooldown", bar_index >= self.cooldown_until_bar,

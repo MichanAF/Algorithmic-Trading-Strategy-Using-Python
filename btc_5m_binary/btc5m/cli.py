@@ -4,6 +4,7 @@
     python -m btc5m backtest --data btc_5m.csv       # walk-forward run
     python -m btc5m gates    --data btc_5m.csv       # what is each gate worth?
     python -m btc5m compare  --data btc_5m.csv       # which stack should I run?
+    python -m btc5m overlap  --data btc_5m.csv       # are the gates independent?
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m menu                             # the gate menu
 """
@@ -16,6 +17,7 @@ import sys
 from pathlib import Path
 
 from .attribution import compare_stacks, gate_edge, render_table
+from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
@@ -29,6 +31,11 @@ PRESETS: dict[str, list[str]] = {
     "core3": ["data_integrity", "volatility_regime", "trend_alignment"],
     "trend5": ["data_integrity", "volatility_regime", "trend_alignment",
                "persistence", "participation"],
+    # Best risk-adjusted result on the bundled fixture: participation's verdict
+    # added no information once the other gates agreed, and dropping it raised
+    # Sharpe from 3.6 to 6.2 by trading five times as often.
+    "trend4": ["data_integrity", "volatility_regime", "trend_alignment",
+               "persistence"],
     "trend6-session": ["data_integrity", "volatility_regime", "session",
                        "trend_alignment", "persistence", "participation"],
     "thrust": ["data_integrity", "volatility_regime", "trend_alignment",
@@ -261,6 +268,19 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_overlap(args) -> int:
+    cfg = _build_config(args)
+    series = _load_series(args)
+    _warn_if_synthetic(args)
+    print(full_report(series, cfg, reference=_load_reference(args)))
+    print()
+    print("A stack is only as selective as the number of independent questions")
+    print("it asks. Two gates that fire together for the same reason halve the")
+    print("signal count without adding evidence, and make the stack look more")
+    print("confirmed than it is. Section 3 is the one that decides.")
+    return 0
+
+
 def cmd_fetch(args) -> int:
     series = fetch_klines(args.exchange, args.symbol, args.limit)
     path = series.write_csv(args.out)
@@ -298,8 +318,9 @@ def cmd_menu(args) -> int:
     print("PRESET STACKS")
     for name, names in PRESETS.items():
         print(f"  {name:16s} {', '.join(names)}")
-    print("\nMeasure before you commit: `btc5m gates` scores each gate on your")
-    print("own data and `btc5m compare` scores whole stacks against each other.")
+    print("\nMeasure before you commit: `btc5m gates` scores each gate on your own")
+    print("data, `btc5m compare` scores whole stacks, and `btc5m overlap` checks")
+    print("whether the gates you picked are actually asking different questions.")
     return 0
 
 
@@ -343,6 +364,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--presets", nargs="+", choices=sorted(PRESETS),
                    help="limit the comparison to these presets")
     p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("overlap", help="check whether gates and conditions are independent")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.set_defaults(func=cmd_overlap)
 
     p = sub.add_parser("fetch", help="download closed 5m candles to CSV")
     p.add_argument("--exchange", default="binance",

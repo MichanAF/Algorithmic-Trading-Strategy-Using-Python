@@ -286,6 +286,14 @@ class StrategyConfig:
         if self.risk.starting_bankroll <= 0.0:
             raise ValueError("starting_bankroll must be positive")
 
+        if self.implied_conviction_floor() is None:
+            raise ValueError(
+                f"no conviction can clear this payout: prob_cap "
+                f"{self.betting.prob_cap} caps p_model below break-even "
+                f"{self.break_even_probability():.4f} + required_edge "
+                f"{self.betting.required_edge}. The strategy could never bet."
+            )
+
         directional = [g for g in self.gate_stack if GATE_REGISTRY[g].is_directional]
         if not directional:
             raise ValueError(
@@ -311,6 +319,49 @@ class StrategyConfig:
         if not 0.0 < price < 1.0:
             raise ValueError("contract_price plus fees must be in (0, 1)")
         return price
+
+    def implied_conviction_floor(self) -> float | None:
+        """Lowest conviction at which the priced-edge condition passes.
+
+        The probability map is monotone, so ``required_edge`` is really a
+        conviction threshold wearing different units.  Comparing this number
+        against ``min_conviction`` says which of the two conditions is actually
+        binding -- and whether one of them is dead code.  Returns None when no
+        conviction can clear the payout, meaning the strategy can never bet.
+        """
+        b = self.betting
+        span = b.prob_cap - 0.5
+        if span <= 0.0:
+            return None
+        needed = (self.break_even_probability() + b.required_edge - 0.5) / span
+        if needed <= 0.0:
+            return 0.0
+        if needed > 1.0:
+            return None
+        return float(needed ** (1.0 / max(1e-9, b.prob_curve)))
+
+    def effective_conviction_floor(self) -> float:
+        """The conviction a bar really has to reach, from both conditions.
+
+        Betting conditions 1 and 2 are two thresholds on the same scalar, so the
+        strategy only ever has one: the higher of the pair.  They are both kept
+        because which one binds depends on the payout -- the conviction floor
+        holds at generous odds, the edge requirement takes over as odds worsen --
+        but nobody should read them as two independent safeguards.
+        """
+        implied = self.implied_conviction_floor()
+        if implied is None:
+            return float("inf")
+        return max(self.betting.min_conviction, implied)
+
+    def binding_betting_condition(self) -> str:
+        """Which of condition 1 and condition 2 is the tighter of the two."""
+        implied = self.implied_conviction_floor()
+        if implied is None:
+            return "priced_edge (unreachable: no conviction clears the payout)"
+        if self.betting.min_conviction >= implied:
+            return "min_conviction"
+        return "required_edge"
 
     def payoff_odds(self) -> float:
         """Profit per unit staked on a win, net of fees."""
