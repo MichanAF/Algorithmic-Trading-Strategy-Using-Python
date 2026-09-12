@@ -7,9 +7,11 @@ in use, not a new one.
     testnet   https://api-testnet.predict.fun    no API key, 240 req/min
     mainnet   https://api.predict.fun            x-api-key header, 240 req/min
 
-**This module only reads.**  Placing a bet means building and signing an order
-with a private key, which belongs in predict.fun's own ``predict-sdk`` and in a
-wallet this repository never sees.
+**This module only reads.**  Placing a bet means building and signing an order,
+which belongs in predict.fun's own ``predict-sdk`` and in a wallet this
+repository never sees.  Signing needs either an EOA private key or, for a Smart
+Wallet ("Predict Account"), the account address plus the Privy wallet key --
+neither of which any code here asks for or should be given.
 
 Field names are handled defensively on purpose.  The API could not be reached
 from the environment this was written in, so every accessor tries the plausible

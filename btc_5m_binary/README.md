@@ -632,6 +632,27 @@ BTC/**USD**. For live decisions read the mid. For backtesting it does not
 matter: Binance's BTCUSDT spread is about a cent against a median five-minute
 move of about 32 dollars, and only 0.008% of bars move less than half a spread.
 
+### predict.fun accounts: EOA or Smart Wallet
+
+Two ways to reach the protocol, and they need different things:
+
+| | What you need |
+|---|---|
+| **EOA** | an ordinary wallet private key |
+| **Smart Wallet** ("Predict Account") | the account address (your deposit address) **and** the Privy wallet private key |
+
+The web app creates a Smart Wallet for you automatically, so if you have been
+betting through Trust Wallet you are on that path. The Privy key is exported
+from `predict.fun/account/settings`.
+
+Their own SDKs handle the signing: `pip install predict-sdk`
+([source](https://github.com/PredictDotFun/sdk-python)), or the TypeScript one.
+Both are published on Context7, so an assistant with network access can read
+them directly.
+
+**Keep the key out of this repository.** Read-side calls need only the API key,
+and nothing here asks for more than that.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
