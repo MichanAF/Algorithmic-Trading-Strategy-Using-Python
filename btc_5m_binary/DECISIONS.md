@@ -101,8 +101,28 @@ the fade config) or from the year ending 2023-09-13.
    admits only the most extreme imbalances, and the grid in item 4 shows
    those are not the better ones. A flat vote (`score_span` 0: a pass is a
    full vote) is the candidate fix, measured next.
+
+   Measured (run 34753701038, development year, fade config betting and
+   risk, weighted wiring):
+
+   | candidate | taker vote | bets/year | per day | hit rate | vs 52.00% | max drawdown | longest loss streak | Sharpe |
+   |---|---|---|---|---|---|---|---|---|
+   | A (\|z\| 1.0, vol 2x) | sloped (span 2.0) | 290 | 0.80 | 50.87% | -1.13% | 5.49% | 8 | -0.39 |
+   | A | flat (span 0) | 4,787 | 13.15 | 53.62% +/- 0.72% | +1.62%, significant | 12.65% | 11 | 2.24 |
+   | C (\|z\| 2.0, none) | sloped (span 2.0) | 320 | 0.88 | 52.19% | +0.19% | 4.28% | 7 | 0.07 |
+   | C | flat (span 0) | 4,632 | 12.73 | 53.53% +/- 0.73% | +1.53%, significant | 9.24% | 9 | 2.09 |
+
+   Unanimous wiring: 2 bets a year for A, none for C. The fade config alone
+   on this year: 325 bets, 52.31%. Read with care: this is the development
+   year, every value was chosen on it, and the backtest subtracts no gas --
+   thirteen bets a day at $0.30 is about $1,400 a year, and at a $12 stake
+   a +1.6% edge is worth about $0.37 a bet, so stake size (or a venue
+   without gas) is where the economics stand or fall. A's drawdown sits
+   close to the 15% halt.
 7. The betting floor, `min_conviction`, which sets how far above `min_abs_z`
    a signal must be before it is a bet, and with it how the taker vote is
-   scored (`score_span`).
+   scored (`score_span`). The flat vote leaves `min_conviction` at the fade
+   config's 0.85 and the fade gate's own bets exactly as they were; only
+   the taker vote changes from a slope to a yes.
 
 Then: the config file, the workflow with the fresh holdout, one run.
