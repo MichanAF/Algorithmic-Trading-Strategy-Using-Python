@@ -81,4 +81,37 @@ the fade config) or from the year ending 2023-09-13.
   significant at two standard errors, with no halt. Anything less fails.
 - **Development-year reference** (run 34753701038): 4,632 bets, 53.53%,
   +1.53%, drawdown 9.24%, longest loss streak 9.
-- **Result:** pending the first run of `fade-flow-hypothesis.yml`.
+- **Result** ([run 34755099078](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34755099078),
+  the first and only run): **FAIL**, by the letter of the criterion. On the
+  fresh holdout the config placed 4,663 bets at 54.31% +/- 0.73%, +2.31%
+  over break-even, significant at two standard errors -- and the backtest
+  halted: the drawdown reached 15.07% against the 15.00% limit, late in the
+  year (320 signals were refused after the halt), with the year's P&L at
+  +62.58% on the 5,000 bankroll before it. The edge and significance
+  clauses passed by a wide margin; the no-halt clause failed by 0.07 of a
+  point.
+
+  Four years, one config, nothing changed between them:
+
+  | year | bets | hit rate | vs 52.00% | drawdown | halted |
+  |---|---|---|---|---|---|
+  | **fresh holdout** (to 2023-09-13) | 4,663 | **54.31%** | **+2.31%** | 15.07% | **yes, late** |
+  | development (to 2024-09-13) | 4,632 | 53.53% | +1.53% | 9.24% | no |
+  | later, seen (to 2025-09-13) | 3,590 | 51.14% | -0.86% | 15.16% | yes |
+  | later, seen (to 2026-09-13) | 4,087 | 53.94% | +1.94% | 7.72% | no |
+
+  Signal level on the fresh holdout: mean_reversion 55.12% (z +2.2),
+  taker_flow 53.51% (z +2.1), both significant.
+
+  What it says. The signal cleared the bar on a year it had never seen. The
+  risk block, pinned from a config that bet 235 times a year, was never
+  sized for 4,600 and tripped its 15% drawdown limit in two of four years.
+  And one of the four years was negative: the year the fade gate alone did
+  best is the year the taker gate did nothing. Pooled over the three years
+  the values were not chosen on: 53.26% on 12,301 bets, +1.26%, z about
+  2.8, with a year-to-year range from -0.86% to +2.31%. The backtest
+  subtracts no gas.
+
+  This file and `configs/fade-flow-5m.json` are not edited. Any change --
+  to the risk block, the stake, the venue's cost -- is a new hypothesis,
+  and the next fresh year is the one ending 2022-09-13.
