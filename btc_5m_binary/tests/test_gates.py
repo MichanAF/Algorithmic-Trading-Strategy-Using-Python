@@ -511,7 +511,9 @@ def test_a_zero_score_span_makes_a_pass_a_full_vote():
     """The betting layer bets on conviction, so a vote that climbs from 0 at
     the floor means only the most extreme imbalances ever become bets.  A
     span of 0 says yes or no and nothing in between."""
-    series = _flow_series(spike_share=0.95)
+    # A share of 0.55 against 0.02 of noise is a z of about 2.5: past a floor
+    # of 1.5, and inside a 2.0 span, so the sloped score is strictly between.
+    series = _flow_series(spike_share=0.55)
     sloped = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=2.0)
     flat = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=0.0)
     assert sloped.passed and flat.passed
