@@ -437,12 +437,23 @@ def test_combination_renders_and_names_the_wirings():
 
 
 def test_full_report_adds_the_section_only_for_two_directional_gates(series):
+    """The taker gate needs a taker column to ever warm up, so the fixture
+    gets a random one; without it every bar is warm-up and there is nothing
+    to report on."""
+    from btc5m.data import BarSeries
     from btc5m.redundancy import full_report
+    rng = np.random.default_rng(3)
+    with_taker = BarSeries(
+        ts=series.ts, open=series.open, high=series.high, low=series.low,
+        close=series.close, volume=series.volume,
+        taker_buy=series.volume * rng.uniform(0.3, 0.7, size=len(series)))
     two = config_from_dict({"gate_stack": ["data_integrity", "mean_reversion",
                                            "taker_flow", "session"],
                             "betting": {"min_directional_gates": 1}})
     one = config_from_dict({"gate_stack": ["data_integrity", "mean_reversion",
                                            "session"],
                             "betting": {"min_directional_gates": 1}})
-    assert "3b. HOW mean_reversion AND taker_flow COMBINE" in full_report(series, two)
-    assert "3b." not in full_report(series, one)
+    report = full_report(with_taker, two)
+    assert "3b. HOW mean_reversion AND taker_flow COMBINE" in report
+    assert "taker_flow alone" in report
+    assert "3b." not in full_report(with_taker, one)
