@@ -644,7 +644,69 @@ been read. Doing so burns the holdout: the next test needs a fresh one cut from
 earlier history. The `Fade hypothesis` workflow takes no inputs for the same
 reason — a parameter sweep here would be the original error again.
 
-Results are recorded in this section when the workflow has run.
+#### Result: the holdout passed the pre-registered criterion
+
+[Run 34749136959](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34749136959),
+2026-09-13. All three windows fetched full and contiguous — 105,120 bars each,
+each starting on the bar after the previous one ended.
+
+`mean_reversion` as a direction vote, against the 52.00% break-even:
+
+| Window | Signals | Accuracy | vs break-even | z |
+|---|---|---|---|---|
+| development | 1,385 | 54.73% | +2.73% | +2.0 |
+| **holdout** | **1,220** | **55.55%** | **+3.55%** | **+2.5** |
+| contaminated | 1,328 | 53.46% | +1.46% | +1.1 |
+
+The fade config, backtested with the predict.fun risk and betting settings:
+
+| | development | **holdout** | contaminated |
+|---|---|---|---|
+| Bets placed | 325 (0.89/day) | **235 (0.64/day)** | 307 (0.84/day) |
+| Hit rate | 52.31% ± 2.77% | **56.60% ± 3.23%** | 55.70% ± 2.84% |
+| Edge vs break-even | +0.31% | **+4.60%** | +3.70% |
+| Net P&L, before gas | +0.46% | **+4.94%** | +5.34% |
+| Max drawdown | 3.86% | **2.17%** | 2.54% |
+| Halted | no | **no** | no |
+
+**Criterion:** holdout gate edge above +1.0% → **+3.55%**. z ≥ +2 → **+2.5**. No
+halt → **none**. **Pass**, on data nobody had examined, against a bar fixed
+before it was fetched. Three independent years, all positive in sign, at both
+the signal level and the bet level. This is the first number in this repository
+that means something.
+
+**What it does not mean — read all four before treating it as a strategy.**
+
+1. **The bet-level evidence is thin.** The gate table is significant because it
+   scores every signal (1,220 on the holdout); the backtest then places only
+   235 bets after the 0.85 conviction floor and the risk layer. At the bet level
+   the holdout edge is +4.60% ± 3.23% — z ≈ 1.4, and the backtest says so. Pooled
+   across all three years, 867 bets at 54.67%: edge +2.67%, z ≈ 1.6. Pooled at
+   the signal level, 3,933 signals at 54.56%: z ≈ 3.2. The *signal* is
+   established; the *bet stream built on it* is not yet.
+2. **The development year barely cleared zero.** +0.31% edge, Sharpe 0.11. The
+   holdout was the strong year, which is the reverse of the usual pattern and
+   deserves suspicion rather than celebration: on a thin signal, one year's
+   result is mostly that year.
+3. **Conviction still predicts nothing.** Holdout calibration by bucket: 68.75%,
+   66.67%, **40.74%**, 53.08%. Not monotone. `prob_cap` remains fiction, so the
+   Kelly sizing on top of it is sizing off nothing; every bet should be treated
+   as the same flat stake until a conviction score is shown to mean something.
+4. **The P&L is before gas.** `backtest.py` does not subtract it; only the live
+   `evaluate_market` path does. 235 bets × $0.30 BNB gas ≈ $70 against $247 of
+   holdout profit — **28% of the edge**, on a $5,000 bankroll. The whole year
+   is worth about $175 net at this stake. The fee basis (200 bps of face vs of
+   premium) is also still unconfirmed, and it is worth another full point.
+
+**And the untested assumption that could still kill it.** A fade signal fires
+*after* a sharp stretch — exactly when a continuously-traded market may already
+have moved off 50/50. Whether predict.fun's quote is still near even when this
+gate fires has never been observed. That is step 2, and it comes before any
+money.
+
+**The holdout ending 2025-09-13 is now burned** for any change to
+`configs/fade-5m.json`. The next edit — a threshold, a second gate, anything —
+needs a fresh holdout cut from history before 2023-09-13.
 
 ### Conviction now predicts accuracy, which it did not before
 
