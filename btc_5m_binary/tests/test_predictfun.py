@@ -2,18 +2,29 @@
 
 import pytest
 
-from btc5m.predictfun import (CRYPTO_UP_DOWN, MAINNET, TESTNET, PredictFunClient,
-                              PredictFunError, PredictMarket, _as_epoch, _as_price,
-                              _looks_like_btc)
+from btc5m.predictfun import (CRYPTO_UP_DOWN, CRYPTO_VARIANT_CANDIDATES, MAINNET,
+                              TESTNET, Outcome, PredictFunClient, PredictFunError,
+                              PredictMarket, _as_epoch, _as_price, _looks_like_btc)
 
 WINDOW = 1_757_675_700
 
 
+def book(bid, ask):
+    return {"bestBid": {"price": bid, "size": 100.0},
+            "bestAsk": {"price": ask, "size": 100.0}}
+
+
 def payload(**over):
-    base = {"id": "m1", "title": "Bitcoin Up or Down - 5m",
-            "startsAt": WINDOW, "endsAt": WINDOW + 300,
-            "outcomes": [{"outcome": "Up", "tokenId": "t1", "price": 0.49},
-                         {"outcome": "Down", "tokenId": "t2", "price": 0.51}]}
+    """Shaped like a real testnet response, with a crypto up/down variantData."""
+    base = {"id": 1, "question": "Bitcoin Up or Down - 5m",
+            "conditionId": "0xabc", "marketVariant": "CRYPTO_UP_DOWN",
+            "status": "REGISTERED", "tradingStatus": "OPEN",
+            "feeRateBps": 200, "isNegRisk": False, "isYieldBearing": False,
+            "variantData": {"startsAt": WINDOW, "endsAt": WINDOW + 300},
+            # A consistent binary book: the Down side mirrors the Up side, so
+            # the two asks sum above 1.00 by exactly the spread.
+            "outcomes": [{"name": "Up", "onChainId": "t1", **book(0.47, 0.49)},
+                         {"name": "Down", "onChainId": "t2", **book(0.51, 0.53)}]}
     base.update(over)
     return base
 
@@ -52,35 +63,78 @@ def test_btc_titles_are_recognised():
 
 def test_a_well_formed_market_parses():
     m = PredictMarket.from_payload(payload())
-    assert m.market_id == "m1"
+    assert m.market_id == "1"
+    assert m.title.startswith("Bitcoin")
+    assert m.variant == "CRYPTO_UP_DOWN"
+    assert m.trading_status == "OPEN"
+    assert m.is_open
+    assert m.fee_rate_bps == pytest.approx(200.0)
     assert m.window_seconds == 300
     assert m.is_five_minute()
+
+
+def test_the_price_to_buy_is_the_ask_not_the_mid():
+    """You pay the ask. Pricing against the mid quietly overstates the edge."""
+    m = PredictMarket.from_payload(payload())
     assert m.up_price == pytest.approx(0.49)
-    assert m.down_price == pytest.approx(0.51)
+    assert m.down_price == pytest.approx(0.53)
+    assert m.up.mid == pytest.approx(0.48)
+    assert m.up.spread == pytest.approx(0.02)
 
 
-def test_one_side_implies_the_other():
-    """Two-outcome markets sum to about 1, so a missing side is recoverable."""
+def test_outcomes_are_matched_by_name():
+    m = PredictMarket.from_payload(payload())
+    assert m.up.token_id == "t1"
+    assert m.down.token_id == "t2"
+    assert m.outcome("nothing") is None
+
+
+def test_a_market_whose_sides_are_not_up_down_has_no_price():
+    """A DEFAULT market's outcomes are named per-question, not Up/Down."""
+    m = PredictMarket.from_payload(payload(outcomes=[
+        {"name": "Definitely", "onChainId": "a", **book(0.33, 0.37)},
+        {"name": "Maybe", "onChainId": "b", **book(0.63, 0.67)}]))
+    assert m.up is None
+    assert m.up_price is None
+    with pytest.raises(PredictFunError, match="Definitely"):
+        m.to_quote()
+
+
+def test_timing_is_read_from_variant_data():
+    """A DEFAULT market carries no window; a crypto one has it in variantData."""
+    flat = PredictMarket.from_payload(payload(variantData=None))
+    assert flat.starts_at is None
+    assert not flat.is_five_minute()
+    with pytest.raises(PredictFunError, match="variantData"):
+        flat.to_quote()
+
+
+def test_timing_on_the_market_itself_also_works():
     m = PredictMarket.from_payload(payload(
-        outcomes=[{"outcome": "Down", "price": 0.6}]))
-    assert m.down_price == pytest.approx(0.6)
-    assert m.up_price == pytest.approx(0.4)
+        variantData=None, startsAt=WINDOW, endsAt=WINDOW + 300))
+    assert m.window_seconds == 300
 
 
-def test_alternative_field_spellings_are_tolerated():
-    """Field names are guesses until `btc5m probe` confirms them."""
-    m = PredictMarket.from_payload({
-        "marketId": "m2", "question": "BTC Up or Down",
-        "startTime": WINDOW * 1000, "endTime": (WINDOW + 300) * 1000,
-        "tokens": [{"name": "Up", "lastPrice": 45},
-                   {"name": "Down", "lastPrice": 55}]})
-    assert m.market_id == "m2"
-    assert m.is_five_minute()
-    assert m.up_price == pytest.approx(0.45)
+def test_an_empty_book_leaves_no_price_to_buy_at():
+    m = PredictMarket.from_payload(payload(outcomes=[
+        {"name": "Up", "onChainId": "t1"}, {"name": "Down", "onChainId": "t2"}]))
+    assert m.up.ask is None
+    with pytest.raises(PredictFunError, match="no Up/Down asks"):
+        m.to_quote()
+
+
+def test_an_outcome_with_only_one_side_of_the_book():
+    out = Outcome.from_payload({"name": "Up", "onChainId": "t",
+                                "bestAsk": {"price": 0.6, "size": 10}})
+    assert out.bid is None
+    assert out.ask == pytest.approx(0.6)
+    assert out.mid == pytest.approx(0.6)
+    assert out.spread is None
 
 
 def test_a_non_five_minute_window_is_not_mistaken_for_one():
-    hourly = PredictMarket.from_payload(payload(endsAt=WINDOW + 3600))
+    hourly = PredictMarket.from_payload(payload(
+        variantData={"startsAt": WINDOW, "endsAt": WINDOW + 3600}))
     assert hourly.window_seconds == 3600
     assert not hourly.is_five_minute()
 
@@ -88,14 +142,8 @@ def test_a_non_five_minute_window_is_not_mistaken_for_one():
 def test_an_unparseable_market_says_so_rather_than_guessing():
     m = PredictMarket.from_payload({"totally": "unexpected"})
     assert m.starts_at is None
-    assert m.up_price is None
-    with pytest.raises(PredictFunError, match="no start time"):
-        m.to_quote()
-
-
-def test_a_market_without_prices_is_refused():
-    m = PredictMarket.from_payload(payload(outcomes=[]))
-    with pytest.raises(PredictFunError, match="no usable outcome prices"):
+    assert m.outcomes == []
+    with pytest.raises(PredictFunError, match="no window start"):
         m.to_quote()
 
 
@@ -106,6 +154,8 @@ def test_to_quote_hands_the_engine_something_it_can_price():
     assert q.seconds_into_window == 6
     assert q.seconds_to_expiry == 294
     assert q.up_price == pytest.approx(0.49)
+    # Both asks together exceed 1.00; that excess is the book's spread.
+    assert q.overround == pytest.approx(0.02)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,8 +197,31 @@ def test_an_unrecognised_envelope_yields_nothing_rather_than_raising():
     assert PredictFunClient._items("nonsense") == []
 
 
-def test_the_crypto_up_down_variant_is_the_documented_one():
-    assert CRYPTO_UP_DOWN == "VariantData_CryptoUpDown"
+def test_the_crypto_variant_enum_is_still_a_guess():
+    """Only DEFAULT is confirmed. VariantData_CryptoUpDown names the shape of
+    the variantData object, not the marketVariant enum value."""
+    assert CRYPTO_UP_DOWN in CRYPTO_VARIANT_CANDIDATES
+    assert "VariantData" not in CRYPTO_UP_DOWN
+
+
+def test_find_variant_returns_the_first_the_api_accepts():
+    client = PredictFunClient(testnet=True)
+    accepted = CRYPTO_VARIANT_CANDIDATES[1]
+
+    def fake(**params):
+        if params.get("marketVariant") != accepted:
+            raise PredictFunError("predict.fun returned 400 for /v1/markets")
+        return {"success": True, "data": [payload()]}
+
+    client._get_markets = fake
+    assert client.find_variant() == accepted
+
+
+def test_find_variant_gives_up_cleanly_when_none_work():
+    client = PredictFunClient(testnet=True)
+    client._get_markets = lambda **kw: (_ for _ in ()).throw(
+        PredictFunError("predict.fun returned 400 for /v1/markets"))
+    assert client.find_variant() is None
 
 
 def test_current_window_picks_the_open_one(monkeypatch):
@@ -169,40 +242,47 @@ def test_only_five_minute_btc_markets_are_kept(monkeypatch):
     client = PredictFunClient(testnet=True)
     monkeypatch.setattr(client, "markets", lambda **kw: [
         PredictMarket.from_payload(payload(id="btc5m")),
-        PredictMarket.from_payload(payload(id="eth5m", title="Ethereum Up or Down")),
-        PredictMarket.from_payload(payload(id="btc1h", endsAt=WINDOW + 3600)),
+        PredictMarket.from_payload(payload(id="eth5m",
+                                           question="Ethereum Up or Down")),
+        PredictMarket.from_payload(payload(id="btc1h", variantData={
+            "startsAt": WINDOW, "endsAt": WINDOW + 3600})),
+        PredictMarket.from_payload(payload(id="btcClosed", tradingStatus="CLOSED")),
     ])
     assert [m.market_id for m in client.btc_five_minute_markets()] == ["btc5m"]
 
 
-def test_probe_reports_unmatched_fields_instead_of_failing(monkeypatch):
+def test_probe_flags_a_market_with_no_window_times():
     from btc5m.predictfun import probe
 
     client = PredictFunClient(testnet=True)
-    monkeypatch.setattr(client, "_get",
-                        lambda *a, **kw: {"data": [{"totally": "unexpected"}]})
+    client.find_variant = lambda: None
+    client._get_markets = lambda **kw: {"success": True,
+                                        "data": [payload(variantData=None)]}
     text = probe(client)
-    assert "UNMATCHED" in text
+    assert "NO WINDOW TIMES" in text
     assert "_FIELDS" in text
+    assert "none of" in text          # variant discovery failed, and says so
 
 
-def test_probe_shows_a_parsed_market_when_the_fields_do_match(monkeypatch):
+def test_probe_shows_a_parsed_market_when_the_shape_matches():
     from btc5m.predictfun import probe
 
     client = PredictFunClient(testnet=True)
-    monkeypatch.setattr(client, "_get", lambda *a, **kw: {"data": [payload()]})
+    client.find_variant = lambda: "CRYPTO_UP_DOWN"
+    client._get_markets = lambda **kw: {"success": True, "data": [payload()]}
     text = probe(client)
-    assert "UNMATCHED" not in text
+    assert "NO WINDOW TIMES" not in text
     assert "300s" in text
-    assert "UP 0.49" in text
+    assert "200.0 bps" in text
+    assert "ask 0.49" in text
 
 
 def test_market_flags_the_order_builder_needs_are_captured():
     """isNegRisk and isYieldBearing come from GET /markets and gate approvals."""
-    m = PredictMarket.from_payload(payload(isNegRisk=False, isYieldBearing=True))
-    assert m.is_neg_risk is False
+    m = PredictMarket.from_payload(payload(isNegRisk=True, isYieldBearing=True))
+    assert m.is_neg_risk is True
     assert m.is_yield_bearing is True
-    absent = PredictMarket.from_payload(payload())
+    absent = PredictMarket.from_payload({"id": 1})
     assert absent.is_neg_risk is None      # unknown, not assumed false
 
 

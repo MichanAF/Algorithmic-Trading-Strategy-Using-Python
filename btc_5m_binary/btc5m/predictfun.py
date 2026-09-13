@@ -38,32 +38,40 @@ from .venue import PREDICT_FUN_BTC_5M, MarketQuote, VenueRules
 
 MAINNET = "https://api.predict.fun"
 TESTNET = "https://api-testnet.predict.fun"
-CRYPTO_UP_DOWN = "VariantData_CryptoUpDown"
+CRYPTO_UP_DOWN = "CRYPTO_UP_DOWN"
 
 # Candidate spellings for each value we need.  The API was unreachable when this
 # was written, so rather than guess one name and fail silently, try the ones the
 # docs and SDK use and report loudly when none match.
+# Confirmed against a live testnet response.  Alternates are kept only where the
+# API genuinely varies (timing lives in variantData and differs by market kind).
 _FIELDS: dict[str, tuple[str, ...]] = {
-    "id": ("id", "marketId", "market_id", "conditionId"),
-    "slug": ("slug", "ticker", "name"),
-    "title": ("title", "question", "name"),
-    "variant": ("marketVariant", "variant", "market_variant"),
-    "status": ("status", "state"),
-    "start": ("startsAt", "startTime", "eventStartTime", "openTime", "startDate"),
-    "end": ("endsAt", "endTime", "closeTime", "expiryTime", "endDate"),
-    "outcomes": ("outcomes", "tokens", "positions"),
-    "outcome_name": ("outcome", "name", "title", "side"),
-    "outcome_token": ("tokenId", "token_id", "id", "assetId"),
-    "outcome_price": ("price", "lastPrice", "midPrice", "impliedProbability"),
-    "fee_bps": ("feeRateBps", "fee_rate_bps", "feeBps"),
-    # Needed later by the SDK's order builder, so capture them now.
-    "neg_risk": ("isNegRisk", "is_neg_risk", "negRisk"),
-    "yield_bearing": ("isYieldBearing", "is_yield_bearing", "yieldBearing"),
+    "id": ("id",),
+    "condition_id": ("conditionId",),
+    "title": ("question", "title"),
+    "variant": ("marketVariant",),
+    "status": ("status",),
+    "trading_status": ("tradingStatus",),
+    "outcomes": ("outcomes",),
+    "outcome_name": ("name",),
+    "outcome_token": ("onChainId",),
+    "fee_bps": ("feeRateBps",),
+    "neg_risk": ("isNegRisk",),
+    "yield_bearing": ("isYieldBearing",),
+    "variant_data": ("variantData",),
+    # Timing: absent on a DEFAULT market, expected inside variantData on a
+    # crypto up/down one.  Both levels are searched.
+    "start": ("startsAt", "startTime", "openTime", "windowStartsAt", "startDate"),
+    "end": ("endsAt", "endTime", "closeTime", "windowEndsAt", "endDate"),
 }
 
-# The docs write the markets endpoint both ways. Try the versioned path first
-# and fall back, rather than making the caller guess.
 MARKET_PATHS = ("/v1/markets", "/markets")
+
+# marketVariant is a server-side enum.  "DEFAULT" is confirmed; the crypto
+# up/down spelling is not.  VariantData_CryptoUpDown names the *shape* of the
+# variantData object, not the enum value, so it is a poor guess for the filter.
+VARIANT_DEFAULT = "DEFAULT"
+CRYPTO_VARIANT_CANDIDATES = ("CRYPTO_UP_DOWN", "CRYPTO_UPDOWN", "CRYPTO")
 
 
 class PredictFunError(RuntimeError):
@@ -115,6 +123,52 @@ def _as_price(value: Any) -> float | None:
 
 
 @dataclass
+class Outcome:
+    """One side of a market, with its top of book.
+
+    ``ask`` is what you pay to buy it, so that is the price the strategy prices
+    against.  ``mid`` is the fairer read of what the market believes, and is
+    what the skew veto should use -- on a wide book the two asks sum well above
+    1.00 and would read as a decided market when it is only illiquid.
+    """
+
+    name: str
+    token_id: str
+    bid: float | None
+    ask: float | None
+    bid_size: float | None = None
+    ask_size: float | None = None
+
+    @property
+    def mid(self) -> float | None:
+        if self.bid is None or self.ask is None:
+            return self.ask if self.bid is None else self.bid
+        return (self.bid + self.ask) / 2.0
+
+    @property
+    def spread(self) -> float | None:
+        if self.bid is None or self.ask is None:
+            return None
+        return self.ask - self.bid
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "Outcome":
+        def side(key: str) -> tuple[float | None, float | None]:
+            book = payload.get(key)
+            if not isinstance(book, dict):
+                return None, None
+            size = book.get("size")
+            return _as_price(book.get("price")), (
+                float(size) if isinstance(size, (int, float)) else None)
+
+        bid, bid_size = side("bestBid")
+        ask, ask_size = side("bestAsk")
+        return cls(name=str(_first(payload, "outcome_name") or ""),
+                   token_id=str(_first(payload, "outcome_token") or ""),
+                   bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
+
+
+@dataclass
 class PredictMarket:
     """One predict.fun market, normalised into what the engine needs."""
 
@@ -122,12 +176,45 @@ class PredictMarket:
     title: str
     starts_at: int | None
     ends_at: int | None
-    up_price: float | None
-    down_price: float | None
-    # The SDK's order builder needs both of these to build approvals and orders.
+    outcomes: list[Outcome] = field(default_factory=list)
+    variant: str = ""
+    trading_status: str = ""
+    status: str = ""
+    fee_rate_bps: float | None = None
     is_neg_risk: bool | None = None
     is_yield_bearing: bool | None = None
+    condition_id: str = ""
     raw: dict = field(repr=False, default_factory=dict)
+
+    # ------------------------------------------------------------------ #
+
+    def outcome(self, *names: str) -> Outcome | None:
+        wanted = {n.lower() for n in names}
+        for out in self.outcomes:
+            if out.name.strip().lower() in wanted:
+                return out
+        return None
+
+    @property
+    def up(self) -> Outcome | None:
+        return self.outcome("up", "yes", "higher")
+
+    @property
+    def down(self) -> Outcome | None:
+        return self.outcome("down", "no", "lower")
+
+    @property
+    def up_price(self) -> float | None:
+        """What buying UP costs: the ask."""
+        return self.up.ask if self.up else None
+
+    @property
+    def down_price(self) -> float | None:
+        return self.down.ask if self.down else None
+
+    @property
+    def is_open(self) -> bool:
+        return self.trading_status.upper() == "OPEN"
 
     @property
     def window_seconds(self) -> int | None:
@@ -143,48 +230,52 @@ class PredictMarket:
         """Hand the engine a quote it can price."""
         if self.starts_at is None:
             raise PredictFunError(
-                f"market {self.market_id} has no start time; run `btc5m probe` "
-                "and tighten the field names in predictfun._FIELDS")
-        if self.up_price is None or self.down_price is None:
+                f"market {self.market_id} has no window start. On a crypto "
+                "up/down market the timing lives in variantData; run "
+                "`btc5m probe` against one and add the real keys to _FIELDS.")
+        up, down = self.up_price, self.down_price
+        if up is None or down is None:
+            named = [o.name for o in self.outcomes]
             raise PredictFunError(
-                f"market {self.market_id} has no usable outcome prices; run "
-                "`btc5m probe` to see the real payload shape")
+                f"market {self.market_id} has no Up/Down asks to buy at; its "
+                f"outcomes are {named}. Either the book is empty or the sides "
+                "are named differently.")
         now = observed_ts if observed_ts is not None else int(
             datetime.now(tz=timezone.utc).timestamp())
-        return MarketQuote(window_start_ts=self.starts_at, up_price=self.up_price,
-                           down_price=self.down_price, observed_ts=now, rules=rules)
+        return MarketQuote(window_start_ts=self.starts_at, up_price=up,
+                           down_price=down, observed_ts=now, rules=rules)
 
     @classmethod
     def from_payload(cls, payload: dict) -> "PredictMarket":
-        up = down = None
-        outcomes = _first(payload, "outcomes") or []
-        if isinstance(outcomes, dict):
-            outcomes = list(outcomes.values())
-        for outcome in outcomes:
-            if not isinstance(outcome, dict):
-                continue
-            label = str(_first(outcome, "outcome_name") or "").strip().lower()
-            price = _as_price(_first(outcome, "outcome_price"))
-            if label.startswith("up") or label in ("yes", "higher"):
-                up = price
-            elif label.startswith("down") or label in ("no", "lower"):
-                down = price
-        # Two-outcome markets sum to roughly 1, so one side implies the other.
-        if up is None and down is not None:
-            up = 1.0 - down
-        if down is None and up is not None:
-            down = 1.0 - up
+        variant_data = _first(payload, "variant_data")
+        variant_data = variant_data if isinstance(variant_data, dict) else {}
+
+        def timing(key: str) -> int | None:
+            # Timing sits on the market for some kinds and inside variantData
+            # for others, so look in both.
+            return _as_epoch(_first(payload, key) or _first(variant_data, key))
+
         def flag(key: str) -> bool | None:
             value = _first(payload, key)
             return None if value is None else bool(value)
 
+        raw_outcomes = _first(payload, "outcomes") or []
+        if isinstance(raw_outcomes, dict):
+            raw_outcomes = list(raw_outcomes.values())
+        fee = _first(payload, "fee_bps")
+
         return cls(
             market_id=str(_first(payload, "id") or ""),
-            title=str(_first(payload, "title") or _first(payload, "slug") or ""),
-            starts_at=_as_epoch(_first(payload, "start")),
-            ends_at=_as_epoch(_first(payload, "end")),
-            up_price=up, down_price=down,
+            title=str(_first(payload, "title") or ""),
+            starts_at=timing("start"), ends_at=timing("end"),
+            outcomes=[Outcome.from_payload(o) for o in raw_outcomes
+                      if isinstance(o, dict)],
+            variant=str(_first(payload, "variant") or ""),
+            trading_status=str(_first(payload, "trading_status") or ""),
+            status=str(_first(payload, "status") or ""),
+            fee_rate_bps=float(fee) if isinstance(fee, (int, float)) else None,
             is_neg_risk=flag("neg_risk"), is_yield_bearing=flag("yield_bearing"),
+            condition_id=str(_first(payload, "condition_id") or ""),
             raw=payload,
         )
 
@@ -283,10 +374,28 @@ class PredictFunClient:
         return self._get(f"/v1/orderbook/{market_id}")
 
     def btc_five_minute_markets(self) -> list[PredictMarket]:
-        """Five-minute BTC up/down markets, soonest window first."""
+        """Open five-minute BTC up/down markets, soonest window first."""
         found = [m for m in self.markets()
-                 if m.is_five_minute() and _looks_like_btc(m.title)]
+                 if m.is_open and m.is_five_minute() and _looks_like_btc(m.title)]
         return sorted(found, key=lambda m: m.starts_at or 0)
+
+    def find_variant(self) -> str | None:
+        """Which marketVariant value the crypto up/down markets use.
+
+        The enum is server-side and only "DEFAULT" is confirmed, so try the
+        plausible spellings and return the first the API accepts. A wrong value
+        comes back as a 400, not an empty list.
+        """
+        for candidate in CRYPTO_VARIANT_CANDIDATES:
+            try:
+                payload = self._get_markets(marketVariant=candidate, first=1)
+            except PredictFunError as exc:
+                if "400" in str(exc):
+                    continue
+                raise
+            if self._items(payload):
+                return candidate
+        return None
 
     def current_btc_window(self, now: int | None = None) -> PredictMarket | None:
         """The five-minute window that is open right now, if any."""
@@ -304,24 +413,25 @@ def _looks_like_btc(title: str) -> bool:
 
 
 def probe(client: PredictFunClient, limit: int = 3) -> str:
-    """Print the real payload shapes, so the field guesses can be replaced.
-
-    The API was unreachable when this module was written, so every field name in
-    ``_FIELDS`` is a candidate rather than a confirmed spelling.  Run this once
-    against testnet and the output says exactly which ones are right.
-    """
+    """Print what the API actually returns, so the guesses can be replaced."""
     lines = [f"base url   {client.base_url}",
              f"api key    {'set' if client.api_key else 'none (testnet)'}", ""]
-    payload = client._get_markets(marketVariant=CRYPTO_UP_DOWN, first=limit)
+
+    variant = client.find_variant()
+    if variant:
+        lines.append(f"crypto marketVariant: {variant}")
+        payload = client._get_markets(marketVariant=variant, first=limit)
+    else:
+        lines.append(f"crypto marketVariant: none of "
+                     f"{list(CRYPTO_VARIANT_CANDIDATES)} was accepted -- "
+                     f"listing unfiltered instead")
+        payload = client._get_markets(first=limit)
+
     items = client._items(payload)
-    # Responses are wrapped: {"success": bool, "data": ..., "code"/"error"/
-    # "message"/"trace" on failure}.
-    lines.append(f"envelope keys: {sorted(payload) if isinstance(payload, dict) else 'list'}")
-    lines.append(f"markets returned: {len(items)}")
+    envelope = sorted(payload) if isinstance(payload, dict) else "list"
+    lines += [f"envelope keys: {envelope}", f"markets returned: {len(items)}"]
     if not items:
-        lines.append("\nNo markets came back. Try dropping the marketVariant "
-                     "filter -- it is a server-side enum and the spelling may "
-                     "differ from VariantData_CryptoUpDown.")
+        lines.append("\nNo markets came back.")
         return "\n".join(lines)
 
     lines.append(f"\nkeys on a market: {sorted(items[0])}")
@@ -329,18 +439,22 @@ def probe(client: PredictFunClient, limit: int = 3) -> str:
         market = PredictMarket.from_payload(raw)
         lines += [
             "",
-            f"  id       {market.market_id or '(field name not matched)'}",
-            f"  title    {market.title or '(field name not matched)'}",
-            f"  window   {market.starts_at} -> {market.ends_at} "
+            f"  id        {market.market_id}",
+            f"  title     {market.title[:60]}",
+            f"  variant   {market.variant}   status {market.status}"
+            f"   trading {market.trading_status}",
+            f"  fee       {market.fee_rate_bps} bps",
+            f"  window    {market.starts_at} -> {market.ends_at} "
             f"({market.window_seconds}s)",
-            f"  prices   UP {market.up_price} / DOWN {market.down_price}",
         ]
-        missing = [k for k, v in (("id", market.market_id), ("title", market.title),
-                                  ("start", market.starts_at), ("end", market.ends_at),
-                                  ("prices", market.up_price)) if not v]
-        if missing:
-            lines.append(f"  UNMATCHED: {missing} -- add the real key to "
-                         f"predictfun._FIELDS")
+        for out in market.outcomes:
+            lines.append(f"  outcome   {out.name:<10} bid {out.bid} "
+                         f"ask {out.ask} mid {out.mid}")
+        if market.starts_at is None:
+            vd = raw.get("variantData")
+            lines.append(f"  NO WINDOW TIMES. variantData = "
+                         f"{json.dumps(vd)[:300] if vd else 'null'}")
+            lines.append("  -> add its timing keys to predictfun._FIELDS")
     lines.append("\nRaw first market:")
-    lines.append(json.dumps(items[0], indent=2)[:2000])
+    lines.append(json.dumps(items[0], indent=2)[:2500])
     return "\n".join(lines)
