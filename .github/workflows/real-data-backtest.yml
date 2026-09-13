@@ -24,6 +24,15 @@ on:
     branches:
       - 'backtest/**'
       - 'claude/**'
+    # Without this a README-only commit re-downloads a year of Binance data and
+    # re-runs both backtests, which run 2 of this workflow did.  Only a change
+    # that can move the numbers should spend a run: the engine, the configs it
+    # is measured with, or this file.  A deliberate re-run with nothing changed
+    # is what workflow_dispatch is for.
+    paths:
+      - 'btc_5m_binary/btc5m/**'
+      - 'btc_5m_binary/configs/**'
+      - '.github/workflows/real-data-backtest.yml'
   workflow_dispatch:
     inputs:
       source:
