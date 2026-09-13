@@ -24,8 +24,8 @@ from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
-from .data import (BarSeries, fetch_history, fetch_klines, load_csv,
-                   synthetic)
+from .data import (BarSeries, fetch_binance_dump, fetch_history,
+                   fetch_klines, load_csv, synthetic)
 from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .features import build_features
@@ -393,21 +393,46 @@ def cmd_live(args) -> int:
 
 
 def cmd_fetch(args) -> int:
-    # One request caps at 1000 bars, about three and a half days.  Anything
-    # longer has to be paged, and a real backtest needs a year (105,120 bars).
-    if args.limit > 1000:
+    # Three paths, and the default picks between them because the right one is
+    # not obvious: Binance's public archives are unmetered, 12 files for a year
+    # instead of 106 requests, and -- unlike api.binance.com, which answers a US
+    # IP with 451 -- not geo-restricted.  So a long Binance request goes there,
+    # and the REST API is only for the recent tail or another exchange.
+    source = args.source
+    if source == "auto":
+        source = "dump" if (args.exchange == "binance"
+                            and args.limit > 1000) else "api"
+
+    if source == "dump":
+        if args.exchange != "binance":
+            print(f"error: only binance publishes archives; "
+                  f"--exchange {args.exchange} needs --source api",
+                  file=sys.stderr)
+            return 2
+
+        def show_dump(done: int, total: int, held: int) -> None:
+            print(f"\r  archive {done}/{total}, {held:,} bars",
+                  end="", flush=True)
+
+        series = fetch_binance_dump(args.symbol or "BTCUSDT", args.limit,
+                                    pause_seconds=args.pause,
+                                    progress=show_dump)
+        print()
+    elif args.limit > 1000:
         def show(held: int, wanted: int) -> None:
             print(f"\r  {held:,} / {wanted:,} bars", end="", flush=True)
 
         series = fetch_history(args.exchange, args.symbol, args.limit,
                                pause_seconds=args.pause, progress=show)
         print()
-        if len(series) < args.limit:
-            print(f"note: {args.exchange} had {len(series):,} bars, not the "
-                  f"{args.limit:,} asked for -- that is its whole history for "
-                  f"{series.symbol}.")
     else:
         series = fetch_klines(args.exchange, args.symbol, args.limit)
+
+    if len(series) < args.limit:
+        where = "binance's archives" if source == "dump" else args.exchange
+        print(f"note: {where} yielded {len(series):,} bars, not the "
+              f"{args.limit:,} asked for -- either that is the whole history "
+              f"for {series.symbol}, or a period is missing.")
 
     path = series.write_csv(args.out)
     days = len(series) * 300 / 86_400
@@ -549,7 +574,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--year", dest="limit", action="store_const", const=105_120,
                    help="shorthand for --limit 105120")
     p.add_argument("--pause", type=float, default=0.25,
-                   help="seconds between pages (default 0.25)")
+                   help="seconds between requests (default 0.25)")
+    p.add_argument("--source", default="auto", choices=("auto", "dump", "api"),
+                   help="dump = data.binance.vision archives (unmetered, not "
+                        "geo-blocked); api = the REST endpoint. auto picks dump "
+                        "for binance above 1000 bars")
     p.add_argument("-o", "--out", default="btc_5m.csv")
     p.set_defaults(func=cmd_fetch)
 

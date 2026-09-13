@@ -1,5 +1,6 @@
 """Bar containers, CSV handling, paged history, and the generator's realism."""
 
+import io
 import json
 from datetime import datetime, timezone
 
@@ -330,3 +331,160 @@ def test_a_contiguous_series_has_no_gaps():
     series = data.synthetic(200, seed=3)
     assert series.gaps() == []
     assert series.gap_count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# Binance public archives (data.binance.vision)
+# --------------------------------------------------------------------------- #
+
+def _zip_klines(rows, header=False, micros=False) -> bytes:
+    """Build a kline archive the way Binance ships them."""
+    import zipfile as zf
+    lines = []
+    if header:
+        lines.append("open_time,open,high,low,close,volume,close_time,"
+                     "quote_volume,count,taker_base,taker_quote,ignore")
+    for opened, close_px in rows:
+        scale = 1_000_000 if micros else 1_000
+        lines.append(
+            f"{opened * scale},100.0,101.0,99.0,{close_px},12.0,"
+            f"{(opened + 300) * scale - 1},1200.0,42,6.0,600.0,0")
+    buf = io.BytesIO()
+    with zf.ZipFile(buf, "w") as archive:
+        archive.writestr("BTCUSDT-5m-2025-08.csv", "\n".join(lines))
+    return buf.getvalue()
+
+
+def test_archive_rows_land_on_the_boundary_in_milliseconds():
+    opened = 1_757_675_400
+    rows = data._dump_rows(_zip_klines([(opened, "100.5")]), "BTCUSDT")
+    assert rows[0][0] == opened + BAR_SECONDS
+    assert rows[0][0] % BAR_SECONDS == 0
+
+
+def test_archive_rows_land_on_the_boundary_in_microseconds():
+    """The 2025 archives switched to microseconds without renaming anything.
+    Assuming milliseconds would put every bar ~55,000 years in the future."""
+    opened = 1_757_675_400
+    rows = data._dump_rows(_zip_klines([(opened, "100.5")], micros=True),
+                           "BTCUSDT")
+    assert rows[0][0] == opened + BAR_SECONDS
+
+
+def test_a_header_row_is_skipped_not_parsed():
+    """Newer archives carry a header; parsing it as data would raise."""
+    opened = 1_757_675_400
+    rows = data._dump_rows(
+        _zip_klines([(opened, "100.5"), (opened + 300, "101.5")], header=True),
+        "BTCUSDT")
+    assert len(rows) == 2
+    assert rows[0][4] == pytest.approx(100.5)
+
+
+def test_an_archive_with_no_csv_says_so():
+    import zipfile as zf
+    buf = io.BytesIO()
+    with zf.ZipFile(buf, "w") as archive:
+        archive.writestr("README.txt", "nothing here")
+    with pytest.raises(RuntimeError, match="no CSV"):
+        data._dump_rows(buf.getvalue(), "BTCUSDT")
+
+
+def test_dump_periods_covers_the_request_plus_the_current_month():
+    now = datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc)
+    months, days = data._dump_periods(8_640, now)     # 30 days
+    assert "2026-02" in months
+    assert "2026-03" not in months                    # no archive until it ends
+    assert days[0] == "2026-03-01"
+    assert days[-1] == "2026-03-16"                   # yesterday is the newest
+
+
+def test_a_year_needs_about_a_dozen_monthly_archives():
+    now = datetime(2026, 3, 17, tzinfo=timezone.utc)
+    months, _ = data._dump_periods(105_120, now)
+    assert 12 <= len(months) <= 15
+    assert months == sorted(months)
+
+
+def test_the_dump_fetch_stitches_archives_into_one_series(monkeypatch):
+    opened = 1_757_675_400
+    served = {}
+
+    def fake(request, timeout=None):
+        url = request.full_url
+        if url not in served:
+            raise data.urllib.error.HTTPError(url, 404, "nope", None, None)
+        return _Response_bytes(served[url])
+
+    # Two monthly archives, contiguous.
+    now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    months, _ = data._dump_periods(400, now)
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    served[urls[0]] = _zip_klines([(opened + i * 300, "100.5")
+                                   for i in range(200)])
+    served[urls[1]] = _zip_klines([(opened + (200 + i) * 300, "101.5")
+                                   for i in range(200)], header=True)
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    series = data.fetch_binance_dump(bars=400, now=datetime(
+        2026, 3, 1, tzinfo=timezone.utc))
+    assert len(series) == 400
+    assert list(np.diff(series.ts)) == [300] * 399
+    assert series.gaps() == []
+
+
+def test_a_missing_archive_is_skipped_and_shows_up_as_a_gap(monkeypatch):
+    """Binance has occasional holes. They are reported, never filled."""
+    opened = 1_757_675_400
+    now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    months, _ = data._dump_periods(400, now)
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    # Only the second archive exists, and it starts well after the first would.
+    served = {urls[1]: _zip_klines(
+        [(opened, "100.5"), (opened + 3_000, "101.5")])}
+
+    def fake(request, timeout=None):
+        url = request.full_url
+        if url not in served:
+            raise data.urllib.error.HTTPError(url, 404, "nope", None, None)
+        return _Response_bytes(served[url])
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    series = data.fetch_binance_dump(bars=400, now=now)
+    assert len(series) == 2
+    assert series.gaps() == [(1, 9)]        # the hole is named, not invented
+
+
+def test_no_archives_at_all_names_the_likely_cause(monkeypatch):
+    def fake(request, timeout=None):
+        raise data.urllib.error.HTTPError(request.full_url, 404, "nope",
+                                          None, None)
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    with pytest.raises(RuntimeError, match="BTCUSDT not BTC-USD"):
+        data.fetch_binance_dump("BTC-USD", bars=400)
+
+
+def test_the_archive_host_failure_notes_it_is_not_geo_blocked(monkeypatch):
+    """api.binance.com answers a US IP with 451; this host does not, so a
+    failure here points at a proxy rather than at the user's country."""
+    def dead(request, timeout=None):
+        raise data.urllib.error.URLError("blocked")
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", dead)
+    with pytest.raises(RuntimeError, match="not geo-restricted"):
+        data.fetch_binance_dump(bars=400)
+
+
+class _Response_bytes:
+    def __init__(self, blob):
+        self._blob = blob
+
+    def read(self):
+        return self._blob
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False

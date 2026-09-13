@@ -15,11 +15,11 @@ name: Real-data backtest
 on:
   workflow_dispatch:
     inputs:
-      exchange:
-        description: "Exchange to pull candles from"
+      source:
+        description: "Where to get candles"
         type: choice
-        default: coinbase
-        options: [coinbase, binance]
+        default: binance-archives
+        options: [binance-archives, coinbase-api]
       bars:
         description: "5-minute bars (105120 = one year, 8640 = 30 days)"
         default: "105120"
@@ -45,16 +45,22 @@ jobs:
       - name: Install numpy
         run: pip install --quiet "numpy>=1.24"
 
-      # Binance geo-blocks US IPs with a 451, and GitHub's hosted runners are
-      # mostly US, so coinbase is the default rather than the better-known one.
+      # api.binance.com answers a US IP with HTTP 451 and GitHub's hosted runners
+      # are mostly US, so the REST API is the path that fails here.
+      # data.binance.vision is a static archive host with no such restriction,
+      # and it is 12 files for a year against 106 paged requests.
       - name: Fetch real candles
         id: fetch
         run: |
-          python -m btc5m fetch \
-            --exchange "${{ inputs.exchange }}" \
-            --limit "${{ inputs.bars }}" \
-            --pause "${{ inputs.pause }}" \
-            -o btc_5m.csv | tee fetch.log
+          if [ "${{ inputs.source }}" = "binance-archives" ]; then
+            python -m btc5m fetch --exchange binance --source dump \
+              --limit "${{ inputs.bars }}" --pause "${{ inputs.pause }}" \
+              -o btc_5m.csv | tee fetch.log
+          else
+            python -m btc5m fetch --exchange coinbase --source api \
+              --limit "${{ inputs.bars }}" --pause "${{ inputs.pause }}" \
+              -o btc_5m.csv | tee fetch.log
+          fi
 
       - name: Backtest on predict.fun settings
         run: |
@@ -79,7 +85,7 @@ jobs:
               m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text, re.M)
               return m.group(1).strip() if m else "—"
 
-          print(f"## Real-data backtest — {os.environ['EXCHANGE']}\n")
+          print(f"## Real-data backtest — {os.environ['SOURCE']}\n")
           print("```")
           print(pathlib.Path("fetch.log").read_text().strip()
                 if os.path.exists("fetch.log") else "fetch failed")
@@ -102,7 +108,7 @@ jobs:
                 "artifact so the same run can be reproduced locally.")
           PY
         env:
-          EXCHANGE: ${{ inputs.exchange }}
+          SOURCE: ${{ inputs.source }}
 
       - name: Keep the candles
         if: always()

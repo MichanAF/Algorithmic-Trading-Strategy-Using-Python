@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import time
+import zipfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -370,6 +372,144 @@ def fetch_history(exchange: str = "binance", symbol: str | None = None,
 
     ordered = [collected[ts] for ts in sorted(collected)][-bars:]
     cols = list(zip(*ordered))
+    return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
+                     close=cols[4], volume=cols[5], symbol=symbol)
+
+
+# Binance's public data dumps.  Not the trading API: these are static archives
+# on a CDN, which matters for two reasons.  api.binance.com answers a US IP with
+# HTTP 451 and GitHub's hosted runners are mostly US, so the API is the path that
+# fails there; and a year of 5-minute bars is 12 zip files here against 106
+# paged requests, with no rate limit and a byte-identical result every run.
+DUMP_HOST = "https://data.binance.vision"
+_DUMP_MONTH = DUMP_HOST + "/data/spot/monthly/klines/{sym}/5m/{sym}-5m-{ym}.zip"
+_DUMP_DAY = DUMP_HOST + "/data/spot/daily/klines/{sym}/5m/{sym}-5m-{ymd}.zip"
+
+
+def _dump_rows(blob: bytes, symbol: str) -> list[tuple]:
+    """Parse one Binance kline zip into ascending close-time rows.
+
+    Two details the archives changed without renaming anything, both of which
+    silently corrupt a series if assumed away:
+
+    * **Timestamps switched from milliseconds to microseconds** in the 2025
+      archives, so the unit is detected by magnitude rather than trusted.
+    * **A header row appeared**, so the first line is skipped when it is not a
+      number.
+
+    Close time is derived from open time plus a bar length, matching the REST
+    parser: the archives' own close_time column is the last microsecond of the
+    interval and would land a tick short of the boundary.
+    """
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        names = [n for n in archive.namelist() if n.endswith(".csv")]
+        if not names:
+            raise RuntimeError(
+                f"{symbol} dump contained no CSV, only {archive.namelist()}")
+        text = archive.read(names[0]).decode()
+
+    rows = []
+    for line in text.splitlines():
+        parts = line.split(",")
+        if len(parts) < 6:
+            continue
+        try:
+            raw_open = float(parts[0])
+        except ValueError:
+            continue                      # the header row
+        # Milliseconds are ~1.7e12, microseconds ~1.7e15.
+        opened = int(raw_open / (1e6 if raw_open > 1e14 else 1e3))
+        rows.append((opened + BAR_SECONDS, float(parts[1]), float(parts[2]),
+                     float(parts[3]), float(parts[4]), float(parts[5])))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def _dump_periods(bars: int, now: datetime) -> tuple[list[str], list[str]]:
+    """Which monthly and daily archives to pull to cover ``bars`` bars back.
+
+    The current month has no monthly archive until it ends, so its elapsed days
+    come from daily archives.  Yesterday is the newest complete day.
+    """
+    days_needed = bars * BAR_SECONDS / 86_400
+    months: list[str] = []
+    cursor = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    while len(months) * 28 < days_needed + 31:
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        months.append(cursor.strftime("%Y-%m"))
+        if len(months) > 130:             # ~11 years, far past any sane request
+            break
+    months.reverse()
+
+    days = [(datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+             + timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range((now - datetime(now.year, now.month, 1,
+                                           tzinfo=timezone.utc)).days)]
+    return months, days
+
+
+def fetch_binance_dump(symbol: str = "BTCUSDT", bars: int = 105_120,
+                       timeout: int = 60, pause_seconds: float = 0.0,
+                       now: datetime | None = None, progress=None) -> BarSeries:
+    """Build a series from Binance's public archives rather than its REST API.
+
+    This is the preferred path for a backtest.  ``fetch_history`` pages the REST
+    API, which needs 106 requests for a year and is refused outright from a US
+    IP; the archives are 12 files, unmetered, and identical on every run.
+
+    A missing archive is skipped rather than fatal -- Binance has occasional
+    holes, and a month that does not exist for a young symbol is not an error.
+    Gaps that result are reported by ``BarSeries.gaps()``, never filled.
+    """
+    if bars < 1:
+        raise ValueError(f"bars must be positive, got {bars}")
+    now = now or datetime.now(tz=timezone.utc)
+    months, days = _dump_periods(bars, now)
+    urls = [_DUMP_MONTH.format(sym=symbol, ym=m) for m in months]
+    urls += [_DUMP_DAY.format(sym=symbol, ymd=d) for d in days]
+
+    collected: dict[int, tuple] = {}
+    for i, url in enumerate(urls):
+        request = urllib.request.Request(url, headers={"User-Agent": "btc5m/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                blob = response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                continue                  # no archive for that period
+            raise RuntimeError(
+                f"{DUMP_HOST} returned {exc.code} for {url}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if collected:
+                raise RuntimeError(
+                    f"{DUMP_HOST} stopped responding after {len(collected)} "
+                    f"bars ({exc}). Rerun to resume.") from exc
+            raise RuntimeError(
+                f"could not reach {DUMP_HOST} ({exc}). Unlike api.binance.com "
+                "this host is not geo-restricted, so a failure here is usually "
+                "a proxy or firewall rather than your location.") from exc
+
+        for row in _dump_rows(blob, symbol):
+            collected[row[0]] = row
+        if progress is not None:
+            progress(i + 1, len(urls), len(collected))
+        if pause_seconds:
+            time.sleep(pause_seconds)
+
+    if not collected:
+        raise RuntimeError(
+            f"no archives found for {symbol!r} on {DUMP_HOST}. Check the symbol "
+            f"spelling -- these are spot pairs, so BTCUSDT not BTC-USD or "
+            f"BTC/USDT. Tried {len(urls)} periods.")
+
+    now_ts = int(now.timestamp())
+    ordered = [collected[ts] for ts in sorted(collected) if ts <= now_ts][-bars:]
+    if not ordered:
+        raise RuntimeError(f"{symbol} archives held only unclosed candles")
+    cols = list(zip(*ordered))
+    # A missing archive needs no separate channel: if it is in the middle of the
+    # range BarSeries.gaps() reports it, and if it is at the old end the series
+    # simply comes back shorter than asked for, which the caller can see.
     return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
                      close=cols[4], volume=cols[5], symbol=symbol)
 
