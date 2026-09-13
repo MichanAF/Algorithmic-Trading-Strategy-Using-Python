@@ -1,12 +1,23 @@
-"""predict.fun read-side client. Parsing and error paths only: no network."""
+"""predict.fun read-side client. Parsing and error paths only: no network.
+
+Fixtures are shaped like the real ``CRYPTO_UP_DOWN`` payload, which matters in
+one non-obvious way: it carries **no window times at all**. ``variantData`` holds
+the price feed and the settled prices; the window has to be derived from the
+duration in ``categorySlug`` plus ``createdAt``. A fixture with a tidy
+``startsAt`` would test code no crypto market ever exercises.
+"""
 
 import pytest
 
 from btc5m.predictfun import (CRYPTO_UP_DOWN, CRYPTO_VARIANT_CANDIDATES, MAINNET,
-                              TESTNET, Outcome, PredictFunClient, PredictFunError,
-                              PredictMarket, _as_epoch, _as_price, _looks_like_btc)
+                              TESTNET, VARIANT_DEFAULT, CryptoFeed, Outcome,
+                              PredictFunClient, PredictFunError, PredictMarket,
+                              _as_epoch, _as_price, _looks_like_btc)
 
-WINDOW = 1_757_675_700
+WINDOW = 1_757_675_700                 # 2025-09-12 11:15:00 UTC = 7:15 AM ET
+CREATED = "2025-09-12T11:15:07.482Z"   # a few seconds inside the window it opens
+SLUG = "btc-usd-up-down-2025-09-12-07-15-5-minutes"
+FEED_ID = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 
 
 def book(bid, ask):
@@ -14,19 +25,34 @@ def book(bid, ask):
             "bestAsk": {"price": ask, "size": 100.0}}
 
 
+def variant_data(**over):
+    """What a crypto market puts in variantData: a feed and prices, no times."""
+    base = {"type": CRYPTO_UP_DOWN, "priceFeedProvider": "PYTH",
+            "priceFeedSymbol": "BTC_USD", "priceFeedId": FEED_ID,
+            "startPrice": 67975.85, "endPrice": None}
+    base.update(over)
+    return base
+
+
 def payload(**over):
-    """Shaped like a real testnet response, with a crypto up/down variantData."""
-    base = {"id": 1, "question": "Bitcoin Up or Down - 5m",
-            "conditionId": "0xabc", "marketVariant": "CRYPTO_UP_DOWN",
+    """An open five-minute crypto up/down market, shaped like the live one."""
+    base = {"id": 1, "question": "Bitcoin Up or Down - September 12, 7:15AM-7:20AM ET",
+            "title": "Bitcoin Up or Down", "conditionId": "0xabc",
+            "marketVariant": CRYPTO_UP_DOWN, "categorySlug": SLUG,
+            "createdAt": CREATED,
             "status": "REGISTERED", "tradingStatus": "OPEN",
             "feeRateBps": 200, "isNegRisk": False, "isYieldBearing": False,
-            "variantData": {"startsAt": WINDOW, "endsAt": WINDOW + 300},
+            "variantData": variant_data(),
             # A consistent binary book: the Down side mirrors the Up side, so
             # the two asks sum above 1.00 by exactly the spread.
             "outcomes": [{"name": "Up", "onChainId": "t1", **book(0.47, 0.49)},
                          {"name": "Down", "onChainId": "t2", **book(0.51, 0.53)}]}
     base.update(over)
     return base
+
+
+def slug_for(minutes: int) -> str:
+    return f"btc-usd-up-down-2025-09-12-07-15-{minutes}-minutes"
 
 
 # --------------------------------------------------------------------------- #
@@ -47,6 +73,7 @@ def test_epoch_accepts_seconds_milliseconds_and_iso():
     assert _as_epoch(WINDOW) == WINDOW
     assert _as_epoch(WINDOW * 1000) == WINDOW
     assert _as_epoch("2026-09-12T12:15:00Z") == 1_789_215_300
+    assert _as_epoch(CREATED) == WINDOW + 7           # fractional seconds and Z
     assert _as_epoch(None) is None
     assert _as_epoch("not a date") is None
 
@@ -65,7 +92,8 @@ def test_a_well_formed_market_parses():
     m = PredictMarket.from_payload(payload())
     assert m.market_id == "1"
     assert m.title.startswith("Bitcoin")
-    assert m.variant == "CRYPTO_UP_DOWN"
+    assert m.variant == CRYPTO_UP_DOWN
+    assert m.condition_id == "0xabc"
     assert m.trading_status == "OPEN"
     assert m.is_open
     assert m.fee_rate_bps == pytest.approx(200.0)
@@ -91,29 +119,135 @@ def test_outcomes_are_matched_by_name():
 
 def test_a_market_whose_sides_are_not_up_down_has_no_price():
     """A DEFAULT market's outcomes are named per-question, not Up/Down."""
-    m = PredictMarket.from_payload(payload(outcomes=[
-        {"name": "Definitely", "onChainId": "a", **book(0.33, 0.37)},
-        {"name": "Maybe", "onChainId": "b", **book(0.63, 0.67)}]))
+    m = PredictMarket.from_payload(payload(
+        marketVariant=VARIANT_DEFAULT,
+        outcomes=[{"name": "Definitely", "onChainId": "a", **book(0.33, 0.37)},
+                  {"name": "Maybe", "onChainId": "b", **book(0.63, 0.67)}]))
     assert m.up is None
     assert m.up_price is None
     with pytest.raises(PredictFunError, match="Definitely"):
         m.to_quote()
 
 
-def test_timing_is_read_from_variant_data():
-    """A DEFAULT market carries no window; a crypto one has it in variantData."""
-    flat = PredictMarket.from_payload(payload(variantData=None))
-    assert flat.starts_at is None
-    assert not flat.is_five_minute()
-    with pytest.raises(PredictFunError, match="variantData"):
-        flat.to_quote()
+# --------------------------------------------------------------------------- #
+# the window, which a crypto market never states
+# --------------------------------------------------------------------------- #
+
+def test_the_window_comes_from_the_slug_duration_and_created_at():
+    """No start or end is published anywhere; flooring createdAt recovers it."""
+    m = PredictMarket.from_payload(payload())
+    assert "startsAt" not in m.raw and "startsAt" not in m.raw["variantData"]
+    assert m.starts_at == WINDOW                     # createdAt was WINDOW + 7
+    assert m.ends_at == WINDOW + 300
 
 
-def test_timing_on_the_market_itself_also_works():
+def test_created_at_anywhere_inside_the_window_floors_to_the_same_boundary():
+    for offset in (0, 1, 7, 299):
+        m = PredictMarket.from_payload(payload(createdAt=WINDOW + offset))
+        assert m.starts_at == WINDOW, offset
+    # One second later belongs to the next window, not this one.
+    late = PredictMarket.from_payload(payload(createdAt=WINDOW + 300))
+    assert late.starts_at == WINDOW + 300
+
+
+def test_the_slug_duration_sets_the_window_length():
+    fifteen = PredictMarket.from_payload(payload(categorySlug=slug_for(15)))
+    assert fifteen.window_seconds == 900
+    assert not fifteen.is_five_minute()
+    hourly = PredictMarket.from_payload(payload(categorySlug=slug_for(60)))
+    assert hourly.window_seconds == 3600
+
+
+def test_a_singular_minute_slug_still_parses():
+    """"-1-minute", not "-1-minutes", if such a market ever exists."""
+    m = PredictMarket.from_payload(
+        payload(categorySlug="btc-usd-up-down-2025-09-12-07-15-1-minute"))
+    assert m.window_seconds == 60
+
+
+def test_explicit_times_win_over_the_derived_ones():
+    """Other market kinds may publish a window; believe them when they do."""
     m = PredictMarket.from_payload(payload(
-        variantData=None, startsAt=WINDOW, endsAt=WINDOW + 300))
+        categorySlug=slug_for(15), startsAt=WINDOW, endsAt=WINDOW + 300))
     assert m.window_seconds == 300
+    assert m.is_five_minute()
 
+
+def test_a_slug_without_a_duration_leaves_no_window():
+    m = PredictMarket.from_payload(payload(categorySlug="btc-usd-up-down"))
+    assert m.starts_at is None
+    assert not m.is_five_minute()
+    with pytest.raises(PredictFunError, match="category slug"):
+        m.to_quote()
+
+
+def test_a_missing_created_at_leaves_no_window():
+    m = PredictMarket.from_payload(payload(createdAt=None))
+    assert m.starts_at is None
+    with pytest.raises(PredictFunError, match="createdAt"):
+        m.to_quote()
+
+
+def test_an_unparseable_market_says_so_rather_than_guessing():
+    m = PredictMarket.from_payload({"totally": "unexpected"})
+    assert m.starts_at is None
+    assert m.outcomes == []
+    with pytest.raises(PredictFunError, match="no derivable window"):
+        m.to_quote()
+
+
+# --------------------------------------------------------------------------- #
+# the settlement feed, which is per market and not the venue's
+# --------------------------------------------------------------------------- #
+
+def test_the_feed_is_read_from_the_market_not_assumed():
+    """The sample settles on Pyth BTC/USD; Trust Wallet's rules text says
+    Chainlink BTC/USDT. Whichever is right, it is the market that decides."""
+    m = PredictMarket.from_payload(payload())
+    assert m.feed.provider == "PYTH"
+    assert m.feed.symbol == "BTC_USD"
+    assert m.feed.feed_id == FEED_ID
+    assert m.feed.start_price == pytest.approx(67975.85)
+
+
+def test_an_open_market_has_no_end_price_so_no_realised_move():
+    m = PredictMarket.from_payload(payload())
+    assert m.feed.end_price is None
+    assert m.feed.realised_move is None
+
+
+def test_a_settled_market_reports_its_realised_move():
+    m = PredictMarket.from_payload(payload(
+        status="RESOLVED", tradingStatus="CLOSED",
+        variantData=variant_data(endPrice=67203.16801979),
+        # Resolved markets come back with both books null.
+        outcomes=[{"name": "Up", "onChainId": "t1", "bestBid": None,
+                   "bestAsk": None},
+                  {"name": "Down", "onChainId": "t2", "bestBid": None,
+                   "bestAsk": None}]))
+    assert not m.is_open
+    assert m.feed.realised_move == pytest.approx(-772.68, abs=0.01)
+    assert m.up_price is None                  # nothing to buy: it is over
+    with pytest.raises(PredictFunError, match="no Up/Down asks"):
+        m.to_quote()
+
+
+def test_a_market_with_no_variant_data_has_no_feed():
+    """A DEFAULT market's variantData is null, and it settles on an oracle."""
+    m = PredictMarket.from_payload(payload(marketVariant=VARIANT_DEFAULT,
+                                           variantData=None))
+    assert m.feed is None
+
+
+def test_a_feed_with_nothing_in_it_is_still_safe_to_read():
+    feed = CryptoFeed.from_payload({})
+    assert feed.provider == ""
+    assert feed.realised_move is None
+
+
+# --------------------------------------------------------------------------- #
+# the book
+# --------------------------------------------------------------------------- #
 
 def test_an_empty_book_leaves_no_price_to_buy_at():
     m = PredictMarket.from_payload(payload(outcomes=[
@@ -130,21 +264,6 @@ def test_an_outcome_with_only_one_side_of_the_book():
     assert out.ask == pytest.approx(0.6)
     assert out.mid == pytest.approx(0.6)
     assert out.spread is None
-
-
-def test_a_non_five_minute_window_is_not_mistaken_for_one():
-    hourly = PredictMarket.from_payload(payload(
-        variantData={"startsAt": WINDOW, "endsAt": WINDOW + 3600}))
-    assert hourly.window_seconds == 3600
-    assert not hourly.is_five_minute()
-
-
-def test_an_unparseable_market_says_so_rather_than_guessing():
-    m = PredictMarket.from_payload({"totally": "unexpected"})
-    assert m.starts_at is None
-    assert m.outcomes == []
-    with pytest.raises(PredictFunError, match="no window start"):
-        m.to_quote()
 
 
 def test_to_quote_hands_the_engine_something_it_can_price():
@@ -197,27 +316,28 @@ def test_an_unrecognised_envelope_yields_nothing_rather_than_raising():
     assert PredictFunClient._items("nonsense") == []
 
 
-def test_the_crypto_variant_enum_is_still_a_guess():
-    """Only DEFAULT is confirmed. VariantData_CryptoUpDown names the shape of
-    the variantData object, not the marketVariant enum value."""
-    assert CRYPTO_UP_DOWN in CRYPTO_VARIANT_CANDIDATES
+def test_both_variant_enum_values_are_confirmed():
+    """CRYPTO_UP_DOWN came off a live crypto market, DEFAULT off an ordinary one.
+    VariantData_CryptoUpDown names the shape of variantData, not this enum."""
+    assert CRYPTO_VARIANT_CANDIDATES == (CRYPTO_UP_DOWN,)
+    assert VARIANT_DEFAULT == "DEFAULT"
     assert "VariantData" not in CRYPTO_UP_DOWN
 
 
-def test_find_variant_returns_the_first_the_api_accepts():
+def test_find_variant_returns_the_one_the_api_accepts():
     client = PredictFunClient(testnet=True)
-    accepted = CRYPTO_VARIANT_CANDIDATES[1]
 
     def fake(**params):
-        if params.get("marketVariant") != accepted:
+        if params.get("marketVariant") != CRYPTO_UP_DOWN:
             raise PredictFunError("predict.fun returned 400 for /v1/markets")
         return {"success": True, "data": [payload()]}
 
     client._get_markets = fake
-    assert client.find_variant() == accepted
+    assert client.find_variant() == CRYPTO_UP_DOWN
 
 
 def test_find_variant_gives_up_cleanly_when_none_work():
+    """If the enum is ever renamed this returns None instead of listing nothing."""
     client = PredictFunClient(testnet=True)
     client._get_markets = lambda **kw: (_ for _ in ()).throw(
         PredictFunError("predict.fun returned 400 for /v1/markets"))
@@ -227,11 +347,9 @@ def test_find_variant_gives_up_cleanly_when_none_work():
 def test_current_window_picks_the_open_one(monkeypatch):
     client = PredictFunClient(testnet=True)
     markets = [
-        PredictMarket.from_payload(payload(id="past", startsAt=WINDOW - 600,
-                                           endsAt=WINDOW - 300)),
+        PredictMarket.from_payload(payload(id="past", createdAt=WINDOW - 300)),
         PredictMarket.from_payload(payload(id="now")),
-        PredictMarket.from_payload(payload(id="next", startsAt=WINDOW + 300,
-                                           endsAt=WINDOW + 600)),
+        PredictMarket.from_payload(payload(id="next", createdAt=WINDOW + 300)),
     ]
     monkeypatch.setattr(client, "btc_five_minute_markets", lambda: markets)
     assert client.current_btc_window(now=WINDOW + 30).market_id == "now"
@@ -244,8 +362,8 @@ def test_only_five_minute_btc_markets_are_kept(monkeypatch):
         PredictMarket.from_payload(payload(id="btc5m")),
         PredictMarket.from_payload(payload(id="eth5m",
                                            question="Ethereum Up or Down")),
-        PredictMarket.from_payload(payload(id="btc1h", variantData={
-            "startsAt": WINDOW, "endsAt": WINDOW + 3600})),
+        PredictMarket.from_payload(payload(id="btc15m",
+                                           categorySlug=slug_for(15))),
         PredictMarket.from_payload(payload(id="btcClosed", tradingStatus="CLOSED")),
     ])
     assert [m.market_id for m in client.btc_five_minute_markets()] == ["btc5m"]
@@ -256,8 +374,8 @@ def test_probe_flags_a_market_with_no_window_times():
 
     client = PredictFunClient(testnet=True)
     client.find_variant = lambda: None
-    client._get_markets = lambda **kw: {"success": True,
-                                        "data": [payload(variantData=None)]}
+    client._get_markets = lambda **kw: {
+        "success": True, "data": [payload(categorySlug="btc-usd-up-down")]}
     text = probe(client)
     assert "NO WINDOW TIMES" in text
     assert "_FIELDS" in text
@@ -268,13 +386,14 @@ def test_probe_shows_a_parsed_market_when_the_shape_matches():
     from btc5m.predictfun import probe
 
     client = PredictFunClient(testnet=True)
-    client.find_variant = lambda: "CRYPTO_UP_DOWN"
+    client.find_variant = lambda: CRYPTO_UP_DOWN
     client._get_markets = lambda **kw: {"success": True, "data": [payload()]}
     text = probe(client)
     assert "NO WINDOW TIMES" not in text
     assert "300s" in text
     assert "200.0 bps" in text
     assert "ask 0.49" in text
+    assert "PYTH BTC_USD" in text     # the feed, which is per market
 
 
 def test_market_flags_the_order_builder_needs_are_captured():

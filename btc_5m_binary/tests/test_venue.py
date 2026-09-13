@@ -165,7 +165,10 @@ def test_fees_are_added_to_the_price(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     q = quote_at(5, down=50, window=window)
-    free = evaluate_market(signal, q, cfg, rules=TRUST_WALLET_BTC_5M)
+    # Not TRUST_WALLET_BTC_5M: predict.fun charges 200 bps, so it is not the
+    # free baseline this test needs.
+    free_rules = VenueRules(name="free", fee_model="none", max_entry_skew=0.5)
+    free = evaluate_market(signal, q, cfg, rules=free_rules)
     costly_rules = VenueRules(name="x", fee_bps=100.0, max_entry_skew=0.5)
     costly = evaluate_market(signal, q, cfg, rules=costly_rules)
     assert costly.price > free.price
@@ -249,7 +252,15 @@ def test_the_bundled_venue_config_loads_and_prices_a_contract():
     cfg.validate()
     assert cfg.betting.payout_mode == "contract_price"
     assert cfg.betting.tie_policy == "void"
-    assert cfg.break_even_probability() == pytest.approx(cfg.betting.contract_price)
+    # Break-even is the price *plus the fee*, and predict.fun charges 200 bps --
+    # so 0.52 on an even quote, not 0.50.  It used to equal contract_price only
+    # because fee_bps was modelled as zero, which was wrong.
+    assert cfg.betting.fee_bps == pytest.approx(200.0)
+    assert cfg.break_even_probability() == pytest.approx(0.52)
+    assert cfg.break_even_probability() > cfg.betting.contract_price
+    # The conviction floor still binds ahead of the priced-edge condition, so the
+    # dearer fee narrows the edge without silencing the strategy.
+    assert cfg.binding_betting_condition() == "min_conviction"
 
 
 def test_trust_wallet_is_predict_fun():
@@ -264,9 +275,27 @@ def test_the_predict_fun_profile_matches_the_published_rules():
     assert v.quote_style == "contract_price"
     assert v.tie_rule == "split"
     assert v.tie_resolves_to == FLAT
-    assert "chain.link" in v.settlement_url
     assert "BNB" in v.chain
     assert v.collateral == "USDT"
+
+
+def test_the_predict_fun_profile_settles_on_the_feed_the_market_declares():
+    """A live CRYPTO_UP_DOWN market declares Pyth BTC/USD, contradicting the
+    Chainlink BTC/USDT in Trust Wallet's rules text. The market wins, and the
+    profile is only the backtest default -- read it per market."""
+    v = PREDICT_FUN_BTC_5M
+    assert "pyth" in v.price_feed
+    assert "per market" in v.price_feed
+    assert "pyth.network" in v.settlement_url
+
+
+def test_predict_fun_charges_a_fee_and_the_profile_says_so():
+    """It was modelled as free, which was wrong: feeRateBps is 200."""
+    v = PREDICT_FUN_BTC_5M
+    assert v.fee_model == "flat_bps"
+    assert v.fee_bps == pytest.approx(200.0)
+    assert v.fee_per_share(0.50) == pytest.approx(0.02)
+    assert v.effective_price(0.50) == pytest.approx(0.52)
 
 
 def test_the_polymarket_profile_matches_the_published_rules():
@@ -485,7 +514,7 @@ def test_the_venue_configs_point_at_their_own_venue():
     assert load_config("configs/predict-fun-bnb-5m.json").venue == "predict-fun-btc-5m"
 
 
-def test_the_same_quote_costs_more_on_the_fee_charging_venue(rig):
+def test_each_venue_prices_the_same_quote_with_its_own_fee_schedule(rig):
     """A config cannot be priced with another venue's fee schedule by accident."""
     _, _, fs, engine, index = rig
     signal = engine.evaluate(fs, index)
@@ -495,7 +524,19 @@ def test_the_same_quote_costs_more_on_the_fee_charging_venue(rig):
                             rules=PREDICT_FUN_BTC_5M)
     on_poly = evaluate_market(signal, quote, load_config("configs/polymarket-5m.json"),
                               rules=POLYMARKET_BTC_5M)
-    assert on_poly.price > on_pf.price
     assert on_poly.price == pytest.approx(0.49 + POLYMARKET_BTC_5M.fee_per_share(0.49))
-    assert on_pf.price == pytest.approx(0.49)
-    assert on_poly.edge < on_pf.edge
+    assert on_pf.price == pytest.approx(0.49 + 0.02)
+
+
+def test_polymarkets_taker_fee_is_cheaper_per_share_at_every_price():
+    """It inverts once predict.fun's 200 bps is modelled. 0.07 x p x (1-p) peaks
+    at 1.75 cents a share (at p = 0.50); a flat 200 bps is 2 cents everywhere.
+    So the fee always favours Polymarket, and predict.fun pays gas on top --
+    which is the opposite of what a zero fee_bps implied."""
+    for price in (0.05, 0.20, 0.40, 0.50, 0.60, 0.80, 0.95):
+        poly = POLYMARKET_BTC_5M.fee_per_share(price)
+        pf = PREDICT_FUN_BTC_5M.fee_per_share(price)
+        assert poly < pf, price
+    assert POLYMARKET_BTC_5M.fee_per_share(0.50) == pytest.approx(0.0175)
+    assert PREDICT_FUN_BTC_5M.gas_cost_quote > 0.0
+    assert POLYMARKET_BTC_5M.gas_cost_quote == 0.0

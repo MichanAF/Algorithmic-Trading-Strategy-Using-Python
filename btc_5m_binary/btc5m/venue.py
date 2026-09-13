@@ -89,24 +89,36 @@ class VenueRules:
 
 
 # The market in the Trust Wallet screenshots: "Bitcoin Up or Down", five-minute
-# windows on BNB Smart Chain, settled from the Chainlink BTC/USDT top-of-book
-# stream.  Gas is a placeholder -- measure your own and set it.
+# windows on BNB Smart Chain.  Gas is a placeholder -- measure your own and set it.
+#
+# ``price_feed`` is the one field here you should not trust as a venue-wide
+# constant.  Trust Wallet's own rules text cites the Chainlink BTC/USDT
+# top-of-book stream, but a live CRYPTO_UP_DOWN market declares **Pyth BTC/USD**
+# in its ``variantData``, and the market is the authority.  Read it per market
+# with ``predictfun.PredictMarket.feed``; this value is only the default for a
+# backtest, where the choice of feed is immaterial next to the fixture itself.
 PREDICT_FUN_BTC_5M = VenueRules(
     name="predict-fun-btc-5m",
     window_seconds=300,
     settlement_candle_seconds=300,
-    price_feed="chainlink-btcusdt-topofbook-mid (Binance best bid/ask)",
+    price_feed="pyth-btcusd (per market: read variantData.priceFeedSymbol)",
     quote_style="contract_price",
     tie_rule="split",
     tie_resolves_to=0,                      # equal prices pay 0.50 to both sides
     chain="BNB Smart Chain",
     collateral="USDT",
-    settlement_url="https://data.chain.link/streams/btc-usdt-topofbook-datalink",
+    settlement_url="https://www.pyth.network/price-feeds/crypto-btc-usd",
     max_entry_seconds=45,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
     fee_model="flat_bps",
-    fee_bps=0.0,                            # measure your own fills and set this
+    # Confirmed: a live CRYPTO_UP_DOWN market carries feeRateBps 200.  What the
+    # 200 bps is charged *on* is still unconfirmed -- here, as everywhere in this
+    # repository, it is read as basis points of the contract's 1.00 face value,
+    # so 2 cents a contract.  That is the pessimistic reading; if it turns out to
+    # be charged on the premium paid it is cheaper.  Read it per market with
+    # ``PredictMarket.fee_rate_bps`` and set this from a real fill.
+    fee_bps=200.0,
     gas_cost_quote=0.30,                    # BNB Chain gas; measure and set
 )
 

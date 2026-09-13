@@ -242,9 +242,13 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
 def fetch_topofbook_mid(symbol: str = "BTCUSDT", timeout: int = 10) -> dict:
     """Current Binance top-of-book bid, ask and mid.
 
-    This is the quantity the Chainlink BTC/USDT top-of-book stream publishes and
-    the one venues settle against, so a live decision should read it rather than
-    the last traded price.
+    A venue settles on an oracle mid, not a last traded price, so a live decision
+    should read a mid.  Which mid is the venue's business and can differ from
+    this one: a live predict.fun crypto market declares **Pyth BTC/USD**, while
+    Trust Wallet's rules text cites the Chainlink BTC/USDT top-of-book stream
+    (which is the mid of Binance's best bid and ask -- what this returns).  Read
+    the settling feed from the market itself with ``PredictMarket.feed``; treat
+    this as a fast proxy for it, not as the settlement price.
 
     For *backtesting* the distinction does not matter: Binance's BTCUSDT spread
     is about one cent, so mid and last differ by at most half a cent, while the

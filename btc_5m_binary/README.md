@@ -367,10 +367,12 @@ count fixed, `min_conviction` is the throttle:
 
 Raw expected value is highest at the *lowest* floor. Two things push back:
 
-**Fixed costs per bet.** On a gas-charging chain, halving the bet count halves
-the gas bill, so fewer-and-better beats more-and-cheaper. This is why the
-predict.fun config runs a 0.85 floor and the Polymarket config runs 0.70 —
-Polymarket has no gas and a proportional fee, so frequency is nearly free there.
+**Fixed costs per bet.** Both venues charge a proportional fee, which frequency
+does not change: staking twice as often at half the size costs the same. Gas is
+different — it is a flat charge per bet, so halving the bet count halves it. That
+is the whole reason the predict.fun config runs a 0.85 floor and the Polymarket
+config runs 0.70: BNB Chain gas makes frequency expensive, and Polymarket's
+gas-free CLOB makes it nearly free.
 
 **Venue minimum orders.** Higher accuracy means a bigger per-bet stake for the
 same daily risk, which is what clears a 5 USDC minimum on a smaller bankroll.
@@ -470,9 +472,10 @@ The three-gate stack with each venue's own risk settings, 105,120 bars
 | Conviction floor | 0.85 | 0.70 |
 | Bets placed | 4,259 (11.7/day) | 8,935 (24.5/day) |
 | Hit rate | 58.11% | 56.97% |
-| Break-even to beat | 50.00% | 51.75% (taker fee) |
-| Max drawdown | 4.13% | 2.72% |
-| Annualised Sharpe | 10.73 | 9.96 |
+| Break-even to beat | 52.00% (200 bps) | 51.75% (taker fee) |
+| Edge over break-even | +6.11% | +5.22% |
+| Max drawdown | 4.41% | 2.72% |
+| Annualised Sharpe | 8.09 | 9.96 |
 | Halted | no | no |
 
 ```bash
@@ -519,10 +522,10 @@ an edge survives.
 | Shape | up/down from window open | up/down from window open | above a **strike** |
 | Chain | BNB Smart Chain | Polygon | Hyperliquid L1 |
 | Collateral | USDT | USDC | USDH |
-| Settles from | Chainlink BTC/USDT top-of-book mid | Chainlink BTC/USD | HyperCore mark price |
+| Settles from | **per market** — a live one declares Pyth BTC/USD | Chainlink BTC/USD | HyperCore mark price |
 | Exact tie | pays 0.50 to both sides | resolves **Up** (`>=`) | n/a |
-| Taker fee | not publicly documented | `shares × 0.07 × p × (1−p)` | zero (initial testing) |
-| Maker fee | not publicly documented | **zero** | zero |
+| Taker fee | `feeRateBps` — **200** on a live market | `shares × 0.07 × p × (1−p)` | zero (initial testing) |
+| Maker fee | not separately documented | **zero** | zero |
 | Min order | not documented | 5 USDC | n/a |
 | Per-bet gas | yes, BNB Chain | none (off-chain CLOB) | none |
 | API | `api.predict.fun`, `x-api-key`, Python and TS SDKs | Gamma + CLOB + WebSocket | Python SDK |
@@ -554,27 +557,36 @@ The **maker fee is zero**. Posting a limit order instead of taking removes the
 cost entirely, and that is the single biggest execution lever on this venue —
 paid for in fill risk, which a 45-second entry window makes real.
 
-### Which is cheaper depends on your stake
+### On cost, Polymarket wins at every stake
 
-Gas is fixed per bet; a proportional fee is not. At a 56.28% hit rate and a 0.50
-quote, profit per bet:
+This conclusion **reversed** once predict.fun's real fee was read off a live
+market. An earlier version of this table modelled predict.fun as fee-free and
+found a crossover near an $8 stake, below which Polymarket's proportional fee
+beat BNB gas and above which predict.fun won. There is no crossover. A live
+`CRYPTO_UP_DOWN` market carries `feeRateBps: 200`, and 2 cents a contract is
+**dearer than Polymarket's taker fee at every price**: `0.07 × p × (1−p)` peaks
+at 1.75 cents, at `p = 0.50`. predict.fun then pays gas on top.
 
-| Stake | predict.fun (taker + $0.30 gas) | Polymarket taker | Polymarket maker |
+At a 56.28% hit rate and a 0.50 quote, profit per bet:
+
+| Stake | predict.fun (200 bps + $0.30 gas) | Polymarket taker | Polymarket maker |
 |---|---|---|---|
-| $5 | +0.33 | +0.44 | +0.63 |
-| $10 | +0.96 | +0.88 | +1.26 |
-| $20 | +2.21 | +1.75 | +2.51 |
-| $100 | +12.26 | +8.75 | +12.56 |
+| $5 | +0.11 | +0.44 | +0.63 |
+| $10 | +0.52 | +0.88 | +1.26 |
+| $20 | +1.35 | +1.75 | +2.51 |
+| $100 | +7.93 | +8.75 | +12.56 |
 
-**Below about an $8 stake Polymarket's fee beats BNB gas; above it predict.fun
-wins.** Polymarket as a maker beats both at every size.
+Per dollar staked: +8.23% on predict.fun *before* gas, +8.75% as a Polymarket
+taker, +12.56% as a Polymarket maker.
 
-**That table assumes predict.fun charges no trading fee, and it does.** A live
-testnet response carries `feeRateBps: 200` — 2% — so the comparison above is
-optimistic for predict.fun and should not be relied on until two things are
-known: what the rate is on a crypto up/down market (the one sampled was a
-`DEFAULT` market) and what the 200 bps is charged *on*. Set `fee_bps` from a
-real fill before trusting any of it.
+**One caveat, and it cuts predict.fun's way.** What the 200 bps is charged *on*
+is not documented. Everything here reads it as basis points of the contract's
+1.00 face value — 2 cents a contract whatever you paid — which is the
+pessimistic reading and the same convention `fee_bps` uses everywhere else in
+this repository. If it is charged on the premium instead, it is 200 bps of 0.50
+= 1 cent at an even quote, and predict.fun becomes the cheaper taker. **One real
+fill settles it.** Read the rate per market with `PredictMarket.fee_rate_bps`
+rather than trusting the profile default.
 
 ### Bankroll, because 3 gates fire often
 
@@ -629,13 +641,27 @@ what it can ever justify buying: **nothing above about 0.60**, and on Polymarket
 nothing above about 0.58 once the fee is added. A model claiming 85% confidence
 in a five-minute BTC direction is lying, so this is a feature.
 
-### Price source
+### Price source: read it per market, do not assume it
 
-Settlement uses a Chainlink mid-price, not the last traded price — and note the
-pair differs: predict.fun settles on BTC/**USDT** top-of-book, Polymarket on
-BTC/**USD**. For live decisions read the mid. For backtesting it does not
-matter: Binance's BTCUSDT spread is about a cent against a median five-minute
-move of about 32 dollars, and only 0.008% of bars move less than half a spread.
+Settlement uses an oracle mid-price, not the last traded price. The oracle is
+**not** a venue-wide constant on predict.fun, and this is a live contradiction
+worth knowing about:
+
+| Source | Says predict.fun settles on |
+|---|---|
+| Trust Wallet's own rules text | Chainlink **BTC/USDT** top-of-book |
+| A live `CRYPTO_UP_DOWN` market's `variantData` | **Pyth BTC/USD** |
+
+The market is the authority. `PredictMarket.feed` returns what the market you
+are about to bet on actually declares — provider, symbol, feed id, and the
+window's start and end prices once it settles — and `PREDICT_FUN_BTC_5M.price_feed`
+is only a backtest default. Polymarket settles on Chainlink BTC/USD.
+
+For backtesting the choice is immaterial: Binance's BTCUSDT spread is about a
+cent against a median five-minute move of about 32 dollars, and only 0.008% of
+bars move less than half a spread. For a live bet it is not immaterial — a
+five-minute window can be decided by less than the gap between two feeds, and on
+this bet the feed *is* the settlement rule.
 
 ### Latency, which this strategy is unusually sensitive to
 
@@ -723,11 +749,15 @@ Field names come from a live testnet response, not from guessing:
 | Envelope | `{success, data, cursor}` |
 | Market id | `id`, an integer, plus `conditionId` |
 | Title | `question` (`title` is a short label) |
+| Kind | `marketVariant` — `CRYPTO_UP_DOWN` or `DEFAULT` |
 | Live filter | `tradingStatus == "OPEN"` |
 | Order flags | `isNegRisk`, `isYieldBearing` |
-| Fee | `feeRateBps` — 200 on the market sampled |
+| Fee | `feeRateBps` — 200 on a live crypto market |
 | Outcome token | `onChainId` |
-| Prices | `bestBid` / `bestAsk`, each `{price, size}` |
+| Prices | `bestBid` / `bestAsk`, each `{price, size}`, **null when resolved** |
+| Window | not published — derived, see below |
+| Settlement feed | `variantData.priceFeedProvider` / `priceFeedSymbol` / `priceFeedId` |
+| Settled prices | `variantData.startPrice` / `endPrice` |
 
 **Prices are a book, not a number.** You pay the **ask**, so that is what the
 strategy prices against; the mid is the fairer read of what the market believes
@@ -735,20 +765,46 @@ and is what the skew veto uses. Pricing the edge against the mid would overstate
 it by half the spread on every bet.
 
 `status` is not sent: it is a server-side enum and `ACTIVE` is not one of its
-values, which testnet answers with a 400. Observed so far: `REGISTERED` for
-`status`, `OPEN` for `tradingStatus`.
+values, which testnet answers with a 400. Observed: `REGISTERED` then `RESOLVED`
+for `status`, `OPEN` then `CLOSED` for `tradingStatus`.
 
-**Two things are still open**, both because the sampled market was a `DEFAULT`
-one rather than a crypto up/down:
+#### The window has to be derived, because nothing publishes it
 
-- The `marketVariant` enum value for crypto markets. `DEFAULT` is confirmed.
-  `VariantData_CryptoUpDown` names the *shape* of `variantData`, not the enum
-  value, so it is a poor guess; `find_variant()` tries the plausible spellings.
-- Where the five-minute window start and end live. Absent at the top level, and
-  `variantData` was null on a `DEFAULT` market, so almost certainly inside it.
-  Both levels are searched.
+This was the last real unknown, and the answer is not where it was expected to
+be. A `CRYPTO_UP_DOWN` market states its window **nowhere machine-readable**:
 
-One `btc5m probe` run against a crypto market closes both.
+```json
+"variantData": {"type": "CRYPTO_UP_DOWN",
+  "priceFeedProvider": "PYTH", "priceFeedSymbol": "BTC_USD",
+  "priceFeedId": "0xe62df6c8…a415b43",
+  "startPrice": 67975.85, "endPrice": 67203.16801979}
+```
+
+Prices and a feed, no times. There is no `startsAt` at the top level either. The
+two machine-readable pieces are `categorySlug`, which ends in the duration
+(`btc-usd-up-down-2026-02-11-09-30-15-minutes`), and `createdAt`, which lands a
+few seconds inside the window it opens. Flooring `createdAt` to the duration grid
+recovers the boundary exactly:
+
+```python
+seconds = duration_from(slug)                 # 900
+start   = (created_at // seconds) * seconds   # exact window open
+```
+
+**Why not parse the title?** `"Bitcoin Up or Down - September 12, 8:15AM-8:20AM
+ET"` states the window in Eastern Time, which means a DST rule and a locale in
+the hot path of a 45-second entry window. The slug and `createdAt` are both UTC
+and both exact. `_window()` still prefers explicit `startsAt`/`endsAt` if a
+market kind ever publishes them.
+
+#### One thing is still open
+
+The sampled market was **15 minutes**, not 5. Its slug says `-15-minutes` and its
+window measured 900 seconds. Whether predict.fun lists 5-minute BTC windows at
+all is unconfirmed — `btc5m probe` against mainnet answers it, and
+`btc_five_minute_markets()` already filters on `window_seconds == 300`, so it
+returns nothing rather than quietly betting a 15-minute window on a 5-minute
+signal.
 
 ### What is not built: signing and sending
 
@@ -845,8 +901,9 @@ btc5m/
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
-configs/          default, conservative, prediction-market
-tests/            282 tests
+configs/          default, conservative, prediction-market,
+                  predict-fun-bnb-5m, polymarket-5m
+tests/            325 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -856,7 +913,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 282 passed
+python -m pytest tests/ -q      # 325 passed
 ```
 
 ---
