@@ -275,3 +275,50 @@ stops; it does not fix that.
   program of fresh-year tests on this signal ends here; what remains is
   economics -- bankroll, venue, gas -- and the live-quote question, neither
   of which a backtest can answer.
+
+## Decision 10: venue, bankroll and stake -- pending
+
+The signal is settled as far as backtests can settle it: about +1.1% of hit
+rate, 95% range roughly +0.4% to +1.7%, some 4,600 bets a year. Whether
+that is money depends on three things no backtest contains: the venue's
+cost, the gas per bet, and the bankroll. The package's own venue rules give
+the first two (`btc5m/venue.py`; predict.fun's $0.30 gas is a placeholder
+to be measured on a real transaction, and its 200 bps is read on face value,
+the pessimistic reading).
+
+| | predict.fun | Polymarket taker | Polymarket maker |
+|---|---|---|---|
+| a 0.50 share really costs | 0.5200 | 0.5175 | 0.5000 |
+| gas per bet | $0.30 | none | none |
+| profit per $ staked at 53.07% | +2.06% | +2.55% | +6.14% |
+| at the low end, 52.4% | +0.77% | +1.26% | +4.80% |
+| at the high end, 53.7% | +3.27% | +3.77% | +7.40% |
+
+A maker fill on Polymarket is not guaranteed -- posting at 0.50 after a push
+means the other side may already have left -- so the maker column is an
+upper bound, not a plan.
+
+At the centre estimate, 4,600 bets a year, before anything the live
+quote may take away:
+
+| stake per bet | predict.fun net per bet | per year | Polymarket taker net per bet | per year | bankroll at 0.10% | bankroll at 0.25% | typical drawdown |
+|---|---|---|---|---|---|---|---|
+| $5 | -0.20 | -907 | +0.13 | +587 | $5,000 | $2,000 | $339 |
+| $10 | -0.09 | -433 | +0.26 | +1,173 | $10,000 | $4,000 | $678 |
+| $25 | +0.21 | +986 | +0.64 | +2,933 | $25,000 | $10,000 | $1,696 |
+| $50 | +0.73 | +3,353 | +1.28 | +5,867 | $50,000 | $20,000 | $3,391 |
+| $100 | +1.76 | +8,085 | +2.55 | +11,733 | $100,000 | $40,000 | $6,782 |
+
+The typical drawdown is stake x sqrt(bets), the figure Decision 8 was
+sized on: at 0.10% of bankroll it is about 7% of it, at 0.25% about 17%.
+
+What the table says. On predict.fun the gas has to be paid out of a
++2% edge, so a $5 or $10 stake loses money and a $25 stake earns about
+$1,000 a year; at the low end of the edge's range, predict.fun only covers
+its gas above a stake of about $39. Polymarket has no gas and a
+cheaper fee, so it is positive at every stake and at every point of the
+range. The stake is set by the bankroll and the sizing already chosen: a
+$25 stake at 0.10% is a $25,000 bankroll; at 0.25% it is $10,000 with the
+wider drawdown that sizing carries. None of these figures survive a live
+quote that has already moved off 50/50 when the gates fire, which is the
+next thing to measure, along with the real gas.
