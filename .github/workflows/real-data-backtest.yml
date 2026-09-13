@@ -96,6 +96,20 @@ jobs:
           python -m btc5m backtest --data btc_5m.csv \
             --config configs/polymarket-5m.json | tee polymarket.log
 
+      # The repository's central claim is that it tells you what each gate is
+      # worth on your data.  Until now these two commands had only ever been run
+      # on the synthetic fixture -- the same fixture that produced an 8-point
+      # illusion -- so their verdicts were as unreliable as the +6.11% was.  This
+      # is diagnosis, not tuning: it reports each gate's marginal value and
+      # leave-one-out effect, and does not change any threshold.
+      - name: What is each gate actually worth on real data
+        continue-on-error: true
+        run: |
+          python -m btc5m gates --data btc_5m.csv \
+            --config configs/predict-fun-bnb-5m.json | tee gates.log
+          python -m btc5m overlap --data btc_5m.csv \
+            --config configs/predict-fun-bnb-5m.json | tee overlap.log
+
       # Pull the decisive lines out of each run and put them on the summary page,
       # which renders as markdown and is readable on a phone.
       - name: Write the summary
@@ -129,7 +143,22 @@ jobs:
           print("\n**Read `edge vs break-even`.** Synthetic data gave +6.11% "
                 "on predict.fun and +5.22% on Polymarket. Under about +1% here, "
                 "the edge is not real and the honest move is to stop.\n")
-          print("Full output is in the step logs; the CSV is attached as an "
+
+          # Each gate's worth on real data, which is the question the backtest
+          # result raises but does not answer.
+          for title, log in (("What each gate's vote is worth", "gates.log"),
+                             ("Where the gates overlap", "overlap.log")):
+              if not os.path.exists(log):
+                  continue
+              body = pathlib.Path(log).read_text().strip()
+              if not body:
+                  continue
+              print(f"\n<details><summary>{title} (real data)</summary>\n")
+              print("```")
+              print(body[:12000])
+              print("```\n</details>")
+
+          print("\nFull output is in the step logs; the CSV is attached as an "
                 "artifact so the same run can be reproduced locally.")
           PY
         env:
