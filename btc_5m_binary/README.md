@@ -1,5 +1,19 @@
 # BTC 5-minute binary strategy
 
+> ## Result: this strategy loses money on real data. Do not trade it.
+>
+> On a real year of Binance BTCUSDT 5-minute bars it hits **49.18%** where it
+> needs **52.00%**, an edge of **−2.82%**, and it trips its own drawdown limit on
+> both venues. Every positive number this README used to lead with came from a
+> synthetic generator that the gate stack had also been *selected on* — an
+> 8-to-9 point illusion. [The full comparison is below.](#one-year-backtest-the-strategy-does-not-work)
+>
+> What is worth reading here is the machinery and the venue research, not the
+> signal: a measurement rig that rejected its own hypothesis, an audit of where
+> gates overlap, a contract-market fee and settlement model, and a read-only
+> predict.fun client. The signal itself is a dead end, and the write-up of *why*
+> is more useful than the code that produced it.
+
 One question, asked every five minutes: **will BTC close higher or lower than it
 is right now? Yes or no.**
 
@@ -462,32 +476,83 @@ The `verdict` column is deliberately conservative. Under 100 joint passes, or
 under 50 bars in either bucket, it reports "too few to judge" rather than a
 number. A gate that looks brilliant on 57 signals in a year has told you nothing.
 
-## One-year backtest
+## One-year backtest: the strategy does not work
 
-The three-gate stack with each venue's own risk settings, 105,120 bars
-(365 days) of the bundled fixture at seed 11:
+**This is the headline result, and it is negative.** On a real year of Binance
+BTCUSDT 5-minute bars the three-gate stack loses money on both venues, and it
+does not lose narrowly — it hits a rate indistinguishable from a coin flip
+against a break-even that is above one.
 
 | | predict.fun | Polymarket |
 |---|---|---|
-| Conviction floor | 0.85 | 0.70 |
-| Bets placed | 4,259 (11.7/day) | 8,935 (24.5/day) |
-| Hit rate | 58.11% | 56.97% |
+| Bets placed | 851 (2.33/day) | 2,470 (6.77/day) |
+| Hit rate | **49.18%** ± 1.71% | **48.79%** ± 1.01% |
 | Break-even to beat | 52.00% (200 bps) | 51.75% (taker fee) |
-| Edge over break-even | +6.11% | +5.22% |
-| Max drawdown | 4.41% | 2.72% |
-| Annualised Sharpe | 8.09 | 9.96 |
-| Halted | no | no |
+| **Edge over break-even** | **−2.82%** | **−2.96%** |
+| Net P&L | −10.66% | −14.02% |
+| Max drawdown | 15.08% | 15.01% |
+| Annualised Sharpe | −1.65 | −2.95 |
+| Halted | **yes**, drawdown limit | **yes**, drawdown limit |
+
+105,120 bars, 2025-09-13 to 2026-09-13, from `data.binance.vision`. Reproduce it
+with the `Real-data backtest` workflow, or locally:
 
 ```bash
-python -m btc5m backtest --config configs/predict-fun-bnb-5m.json \
-  --synthetic 105120 --seed 11
+python -m btc5m fetch --year -o btc_5m.csv
+python -m btc5m backtest --data btc_5m.csv \
+  --config configs/predict-fun-bnb-5m.json
 ```
 
-**The returns those runs produce are not forecasts and are not quoted here.**
-The data is synthetic, the stack was selected on it, and Sharpe near 10 on a
-five-minute coin flip should read as a warning about the fixture, not a
-promise. The transferable numbers are the hit rate against break-even and the
-drawdown, and even those need re-measuring on real history.
+### What the synthetic fixture claimed, and the size of the error
+
+Every performance number this README carried before that run came off the seeded
+generator. Side by side:
+
+| | synthetic | real | gap |
+|---|---|---|---|
+| Hit rate, predict.fun | 58.11% | 49.18% | **−8.9 pts** |
+| Hit rate, Polymarket | 56.97% | 48.79% | **−8.2 pts** |
+| Edge, predict.fun | +6.11% | −2.82% | −8.9 pts |
+| Edge, Polymarket | +5.22% | −2.96% | −8.2 pts |
+
+Two compounding causes, both mine:
+
+1. **The fixture was tuned to look like BTC**, then the gate stack was *selected
+   on that same fixture*. Selection shrinkage was reported as in-sample +7.17%
+   to out-of-sample +5.42% — but both of those were inside the generator. The
+   real out-of-sample number is negative.
+2. **A trend-following direction vote contradicts the autocorrelation measured
+   at the outset** (lag-1 ≈ −0.03 on real 5-minute returns). The synthetic
+   series reproduced that number in aggregate while still rewarding trend
+   continuation, which real BTC does not.
+
+### Conviction is anti-predictive on real data
+
+The five-gate stack was replaced partly because its most confident bucket was
+its only losing one. On real data the three-gate stack does the same thing:
+
+| Conviction | Claimed | Realised (predict.fun) |
+|---|---|---|
+| 0.85 – 0.89 | 62.15% | 49.06% |
+| 0.89 – 0.93 | 62.66% | 50.96% |
+| 0.93 – 0.96 | 63.21% | 53.16% |
+| **0.96 – 1.00** | **63.90%** | **44.75%** |
+
+`prob_cap` is fiction here, so the Kelly sizing built on top of it is sizing off
+a number that means nothing.
+
+### What not to do next
+
+The tempting move is to search gate combinations until one clears break-even on
+this year. **That is the same error one layer deeper** — it would be selecting on
+the only real data available, and the resulting figure would be exactly as
+unreliable as the +6.11% was. Any further hypothesis needs a holdout period
+fixed *before* it is tested, and a reason to believe it beyond backtest fit.
+
+What survives the result: the venue findings (the per-market Pyth feed, the 200
+bps, the window derivation), the data pipeline, the risk layer that halted both
+runs as designed, and a measurement rig that rejected the idea before it cost
+anything.
 
 ### Conviction now predicts accuracy, which it did not before
 
@@ -856,8 +921,16 @@ the same config on five seeds never used for selection, 1,042 days:
 
 The chosen stack's edge fell from +7.17% to +5.42%. The ranking held and the
 losing variant stayed negative, but the magnitude dropped by a quarter purely
-from having selected on the first sample. Expect the same when you move from your
-backtest to live, and then expect another haircut for slippage and latency.
+from having selected on the first sample.
+
+**That haircut was measured inside the generator, and it was nowhere near big
+enough.** Holding out unseen *seeds* only tests robustness to the generator's own
+randomness, not to being wrong about the process — the seeds shared the
+generator, and the generator shared the assumption. The real out-of-sample number
+turned out to be **−2.82%**, a further 8-point drop that no amount of unseen-seed
+testing was ever going to reveal. Treat this whole section as a worked example of
+a validation that felt rigorous and measured the wrong thing: unseen data from
+the same source is not out-of-sample.
 
 *Your payout dominates everything.* A +2.6 point edge is comfortable at 1.95x and
 gone at 1.80x. Measure your venue's real fill, not its advertised one.
@@ -866,10 +939,17 @@ gone at 1.80x. Measure your venue's real fill, not its advertised one.
 
 ## Going live
 
+**Not with this stack.** Step 1 below already ran, and it came back negative — see
+[the result](#one-year-backtest-the-strategy-does-not-work). The list stays
+because it is the right order for any signal, including a replacement, and
+because step 1 is what killed this one.
+
 The engine will not stop you from doing this badly. In order:
 
-1. **Get real history.** A year of 5-minute bars is about 105,000 bars. Anything
-   under a few months cannot distinguish a 2-point edge from noise.
+1. **Get real history first, before tuning anything.** `btc5m fetch --year` is one
+   command; there is no excuse for a synthetic-only result, and this repository
+   spent its entire development on one. A year of 5-minute bars is about 105,000.
+   Anything under a few months cannot distinguish a 2-point edge from noise.
 2. **Set your real payout and fees** in the config. Nothing else matters until
    this is right.
 3. **Run `gates`, `compare` and `overlap`** on your data. Do not assume the
