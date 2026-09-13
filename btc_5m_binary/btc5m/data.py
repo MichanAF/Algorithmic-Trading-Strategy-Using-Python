@@ -258,7 +258,7 @@ def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
         # second short of the boundary and real bars would carry ...:04:59 where
         # synthetic and CSV bars carry ...:05:00.  A one-second skew is not
         # cosmetic here: predict.fun windows sit on exact 300-second grids, and
-        # seconds_into_window is measured against a 45-second entry budget.
+        # seconds_into_window is measured against a 30-second entry budget.
         rows = [(int(k[0]) // 1000 + BAR_SECONDS, float(k[1]), float(k[2]),
                  float(k[3]), float(k[4]), float(k[5])) for k in payload]
     elif exchange == "coinbase":

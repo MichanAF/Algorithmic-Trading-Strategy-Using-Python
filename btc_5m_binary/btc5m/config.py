@@ -184,7 +184,7 @@ class BettingConfig:
     horizon_bars: int = 1              # 1 bar = 5 minutes
     bar_seconds: int = 300
     latency_seconds: int = 5            # assumed decide-to-placed delay
-    max_signal_age_seconds: int = 45
+    max_signal_age_seconds: int = 30
     min_seconds_to_expiry: int = 60
     tie_policy: str = "loss"           # "loss" | "void" | "favor_up" | "favor_down"
     deadband_bps: float = 0.0          # |move| under this counts as a tie

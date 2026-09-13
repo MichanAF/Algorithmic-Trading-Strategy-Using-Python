@@ -47,7 +47,7 @@ class VenueRules:
     settlement_url: str = ""
     # How far into the window we will still open a position.  The whole edge
     # comes from acting on the bar close that started the window.
-    max_entry_seconds: int = 45
+    max_entry_seconds: int = 30
     min_seconds_to_expiry: int = 60
     # A quote this far from even, this early, means the market already knows
     # something the signal does not.
@@ -108,7 +108,7 @@ PREDICT_FUN_BTC_5M = VenueRules(
     chain="BNB Smart Chain",
     collateral="USDT",
     settlement_url="https://www.pyth.network/price-feeds/crypto-btc-usd",
-    max_entry_seconds=45,
+    max_entry_seconds=30,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
     fee_model="flat_bps",
@@ -138,7 +138,7 @@ POLYMARKET_BTC_5M = VenueRules(
     chain="Polygon",
     collateral="USDC",
     settlement_url="https://data.chain.link/streams/btc-usd",
-    max_entry_seconds=45,
+    max_entry_seconds=30,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
     fee_model="polymarket_taker",

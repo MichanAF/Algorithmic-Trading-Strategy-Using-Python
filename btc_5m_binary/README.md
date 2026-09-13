@@ -620,7 +620,7 @@ bet:
 
 The **maker fee is zero**. Posting a limit order instead of taking removes the
 cost entirely, and that is the single biggest execution lever on this venue —
-paid for in fill risk, which a 45-second entry window makes real.
+paid for in fill risk, which a 30-second entry window makes real.
 
 ### On cost, Polymarket wins at every stake
 
@@ -679,7 +679,7 @@ vetoes enforce that:
 
 | Veto | Default | Why |
 |---|---|---|
-| `entry_window` | within 45s of the open | After that, part of the move you are betting on is already history |
+| `entry_window` | within 30s of the open | After that, part of the move you are betting on is already history |
 | `time_to_expiry` | at least 60s left | Below that you are betting on the tail of the window |
 | `market_not_decided` | quote skew ≤ 0.12 | A lopsided quote means the market knows something the signal does not |
 
@@ -731,7 +731,7 @@ this bet the feed *is* the settlement rule.
 ### Latency, which this strategy is unusually sensitive to
 
 predict.fun's primary servers are in **ap-northeast-1 (Tokyo)**. The entry
-window is 45 seconds wide, so where you run from is not a detail: from Japan or
+window is 30 seconds wide, so where you run from is not a detail: from Japan or
 nearby the round trip is tens of milliseconds, from Europe or the US east coast
 it is a couple of hundred plus BNB Chain block time. Measure yours before
 trusting the `entry_window` default.
@@ -794,7 +794,7 @@ the order's `maker`**.
 
 ethers defaults `provider.pollingInterval` to **4000ms**, so every internal
 `tx.wait()` can take up to four seconds to notice a transaction that already
-mined. Against a 45-second entry window on a chain with ~3-second blocks, that
+mined. Against a 30-second entry window on a chain with ~3-second blocks, that
 is most of the budget spent waiting for a poll.
 
 ```js
@@ -858,7 +858,7 @@ start   = (created_at // seconds) * seconds   # exact window open
 
 **Why not parse the title?** `"Bitcoin Up or Down - September 12, 8:15AM-8:20AM
 ET"` states the window in Eastern Time, which means a DST rule and a locale in
-the hot path of a 45-second entry window. The slug and `createdAt` are both UTC
+the hot path of a 30-second entry window. The slug and `createdAt` are both UTC
 and both exact. `_window()` still prefers explicit `startsAt`/`endsAt` if a
 market kind ever publishes them.
 
@@ -888,7 +888,7 @@ The engine decides. It does not place orders, and the gap is real:
   not a trading balance. Anything that asks for it is a theft.
 - Automate from a **separate hot wallet** holding only what you can lose, with
   its key in an environment variable or a hardware signer, never in git.
-- Latency matters. The entry window is 45 seconds; measure the full round trip
+- Latency matters. The entry window is 30 seconds; measure the full round trip
   before trusting that default.
 
 The honest next step is to run `quote` against live markets and place bets by
