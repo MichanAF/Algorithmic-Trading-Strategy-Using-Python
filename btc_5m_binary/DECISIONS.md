@@ -45,8 +45,32 @@ the fade config) or from the year ending 2023-09-13.
    volume floor (run 34750893609): |z| >= 1.0: 34,786 signals, 52.40%, z +1.5;
    >= 1.5: 14,439, 52.81%, z +1.9; >= 2.0: 4,538, 53.93%, z +2.6;
    >= 2.5: 1,006, 52.54%, z +0.3.
-4. `min_volume_ratio` -- the volume floor. Measured next by the same
-   workflow on the bar's own share at floors 0, 1, 1.5 and 2x median.
+4. `min_volume_ratio` -- the volume floor, the bar's volume over its
+   rolling median. Measured with the |z| floor on the bar's own share, faded
+   (run 34752950985); the two values interact, so they are chosen together:
+
+   | \|z\| >= | volume floor | signals/day | fade accuracy | vs 52.00% | z |
+   |---|---|---|---|---|---|
+   | 1.0 | none | 95.3 | 52.40% | +0.40% | +1.5 |
+   | 1.0 | 1.0x | 47.7 | 52.71% | +0.71% | +1.9 |
+   | 1.0 | 1.5x | 24.8 | 53.42% | +1.42% | +2.7 |
+   | 1.0 | 2.0x | 14.8 | 54.01% | +2.01% | +3.0 |
+   | 1.5 | none | 39.6 | 52.81% | +0.81% | +1.9 |
+   | 1.5 | 1.0x | 20.2 | 52.94% | +0.94% | +1.6 |
+   | 1.5 | 1.5x | 10.5 | 53.10% | +1.10% | +1.4 |
+   | 1.5 | 2.0x | 6.2 | 53.47% | +1.47% | +1.4 |
+   | 2.0 | none | 12.4 | 53.93% | +1.93% | +2.6 |
+   | 2.0 | 1.0x | 6.5 | 53.51% | +1.51% | +1.5 |
+   | 2.0 | 1.5x | 3.3 | 53.22% | +1.22% | +0.8 |
+   | 2.0 | 2.0x | 1.9 | 54.08% | +2.08% | +1.1 |
+   | 2.5 | any | <= 2.8 | 50.16% to 52.54% | negative to +0.54% | under +0.5 |
+
+   Two readings. At a |z| floor of 1.0 the volume floor is monotone: every
+   step up in required volume raises accuracy, to 54.01% at 2x median with
+   14.8 signals a day. At a |z| floor of 2.0 the volume floor adds nothing
+   the |z| floor had not already selected. Sixteen cells were read here on
+   top of twenty before; the best cell's z is inflated by that selection,
+   which is what the fresh holdout exists to correct.
 5. `z_window` -- 288 bars (one day) unless there is a reason to change it.
 6. How A and B combine: both must agree, or either may fire; and
    `min_directional_gates`.
