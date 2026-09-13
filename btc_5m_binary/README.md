@@ -108,28 +108,64 @@ Gates come in three kinds, and they run in this order:
 3. **Confirmation gates** are told the side the directional gates chose and may
    only veto it, never propose their own.
 
-The default stack is **three gates**, one per genuinely distinct question:
+The default stack is **three gates**, one per intended question:
 
-| Gate | Kind | The question | Why this one |
+| Gate | Kind | The question | Real data says |
 |---|---|---|---|
-| `data_integrity` | veto | Is the input real? | A gapped bar, stuck price or blown spread turns the bet into a coin flip at worse odds. Costs nothing to check. |
-| `trend_alignment` | directional | Which way? | The only gate whose removal drops the stack below break-even. Strongest on its own (53.5%, z = +4.3) and in combination (+3.5 points marginal, z = +4.1). |
-| `persistence` | directional | Does "which way" mean anything right now? | Five-minute BTC returns are mildly negatively autocorrelated, so following a trend only pays in the subset of time when moves extend. The variance ratio is that test. +2.2 points marginal, z = +3.1. |
+| `data_integrity` | precondition | Is the input real? | Vetoed **28 bars in a year** (0.027%). No measurable effect — as expected of cheap tail insurance on a clean source. Not a gate in any meaningful sense; judging it by hit rate is the wrong test. |
+| `trend_alignment` | directional | Which way? | **48.01%, z = −17.7. Anti-predictive.** Passing makes a bar marginally *worse* than failing (48.38% vs 48.76%, z = −0.7). |
+| `persistence` | directional | Does "which way" mean anything now? | **48.56%, z = −12.3. Anti-predictive.** Separation beyond the other gates +0.56%, z = +1.2 — no information. |
 
-Both directional gates earn their place: `btc5m overlap` confirms each still
-separates winners from losers once the other has agreed. Nothing in this stack
-is dead weight, which is the point of picking three rather than five.
+### Every gate in the menu is at or below break-even on real BTC
 
-Every gate reports its own sub-checks, so a refused bar names the exact
-condition that stopped it rather than reporting a bare verdict.
+`btc5m gates`, run on the real year rather than the fixture. Break-even 52.00%:
 
-**One honest caveat.** `trend_alignment` and `persistence` fire on largely
-independent bars (phi +0.06) but agree on *direction* 98% of the time. So read
-this stack as one direction opinion plus one regime filter plus one integrity
-check — not as two independent votes on which way. If you would rather that be
-explicit, swap `persistence` for the `regime` gate, which runs the same variance
-ratio and ADX test as a veto with no direction vote. It measured equal
-(55.8% vs 56.3% out of sample, within noise).
+| Gate | Signals | Accuracy | vs break-even | z | Verdict |
+|---|---|---|---|---|---|
+| `mean_reversion` | 1,328 | 53.46% | +1.46% | +1.1 | no edge detectable |
+| `location` | 1,392 | 50.58% | −1.42% | −1.1 | no edge detectable |
+| `persistence` | 31,798 | 48.56% | −3.44% | **−12.3** | negative, significant |
+| `momentum_thrust` | 16,960 | 46.39% | −5.61% | **−14.6** | negative, significant |
+| `participation` | 28,510 | 47.06% | −4.94% | **−16.7** | negative, significant |
+| `trend_alignment` | 48,964 | 48.01% | −3.99% | **−17.7** | negative, significant |
+
+**Not one gate clears break-even.** Four are significantly negative. The two that
+are not are the two that barely fire. `mean_reversion` is the only positive sign
+in the table, and at z = +1.1 it is not established — but its direction is the one
+consistent with a lag-1 autocorrelation of −0.03.
+
+**What the synthetic fixture claimed about the same gate:**
+
+| `trend_alignment` | Synthetic | Real |
+|---|---|---|
+| Accuracy | 53.27% | 48.01% |
+| vs break-even | +1.27% | −3.99% |
+| z | **+2.7** | **−17.7** |
+| Verdict | "edge, significant" | "negative edge, significant" |
+
+The fixture named this gate the stack's strongest asset. Real BTC makes it a
+reliable way to pick the wrong side. Every sentence this README previously
+carried about which gates earn their place was evidence from that fixture, and
+is retracted.
+
+**The hypothesis is falsified, not mistuned.** *EMA stack plus higher-timeframe
+agreement predicts the next five minutes* is wrong on real data, and no threshold
+inside `trend_alignment` fixes a vote pointed the wrong way — a more selective
+wrong signal is a wrong signal with fewer samples. Its 63.5% rejection rate comes
+from five sub-checks that all measure the same thing (EMA order, 15-minute slope,
+regression slope, VWAP side — four readings of "is price trending"; only R² asks
+anything different), so they compound into severe selectivity without compounding
+evidence.
+
+Every gate still reports its own sub-checks, so a refused bar names the exact
+condition that stopped it rather than reporting a bare verdict. That machinery is
+sound; it is the gates' content that failed.
+
+**The caveat that was already in this README, and should have been louder.**
+`trend_alignment` and `persistence` fire on largely independent bars (phi +0.08 on
+real data) but agree on *direction* 99% of the time. The stack was never three
+independent votes: it is one direction opinion, one regime filter, and a sanity
+check. On real data the first two are both anti-predictive and the third is inert.
 
 ## The gate menu: what you can factor for
 
@@ -355,15 +391,25 @@ design: `persistence` keeps a +DI/-DI agreement filter that `regime` drops.
 
 ### What is deliberately left out
 
-| Gate | Why not |
-|---|---|
-| `volatility_regime` | Its floor assumes a spread you cross. A yes/no contract crosses none — any non-zero move resolves it. Accuracy is flat across the whole volatility range. |
-| `participation` | Its verdict adds no information once the other two agree (z = +1.9). Costs 80% of signals for ~1.5 points. |
-| `momentum_thrust` | Anti-predictive over the very next bar (z = −8.2). A sharp three-bar push is more often followed by a give-back. |
-| `location` | Harmful as a voter on a trend stack; a trending market is supposed to be near its recent extreme. |
-| `session` | Roughly free, but spends a slot on a veto with no directional content. Add it as a fourth if you trade through funding times. |
-| `mean_reversion` | Contradicts `persistence` by construction, and unproven on its own. |
-| `cross_asset` | Needs a second series wired up. Worth testing if you have ETH data. |
+Every "why not" below was decided on the synthetic fixture. Real-data figures are
+added where they exist, and they mostly say the exclusions were right for the
+wrong reasons — these gates are not merely redundant, they are negative.
+
+| Gate | Why not | Real data |
+|---|---|---|
+| `volatility_regime` | Its floor assumes a spread you cross. A yes/no contract crosses none — any non-zero move resolves it. Accuracy is flat across the whole volatility range. | not separately scored |
+| `participation` | Its verdict adds no information once the other two agree (z = +1.9 on the fixture). Costs 80% of signals for ~1.5 points. | **47.06%, z = −16.7.** Not neutral — significantly negative. |
+| `momentum_thrust` | Anti-predictive over the very next bar (z = −8.2 on the fixture). A sharp three-bar push is more often followed by a give-back. | **46.39%, z = −14.6.** The fixture had this one directionally right. |
+| `location` | Harmful as a voter on a trend stack; a trending market is supposed to be near its recent extreme. | 50.58%, z = −1.1. Too few signals to judge either way. |
+| `session` | Roughly free, but spends a slot on a veto with no directional content. Add it as a fourth if you trade through funding times. | not separately scored |
+| `mean_reversion` | Contradicts `persistence` by construction, and unproven on its own. | **53.46%, z = +1.1 — the only positive sign in the table.** Still unproven, but it is the one exclusion the real data argues against. |
+| `cross_asset` | Needs a second series wired up. Worth testing if you have ETH data. | 0 signals; never fired. |
+
+The pattern is worth naming: the fixture ranked the gates roughly correctly
+relative to each other while being wrong about all of them in absolute terms. It
+could tell which gate was *better*; it could not tell that none of them were
+*good*. A backtest on data you generated can only ever check internal
+consistency.
 
 ### Frequency is set by conviction, not by gate count
 
