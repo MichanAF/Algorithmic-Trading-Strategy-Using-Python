@@ -1,0 +1,27 @@
+{
+  "name": "btc-5m-binary-conservative",
+  "gate_stack": [
+    "data_integrity",
+    "volatility_regime",
+    "session",
+    "trend_alignment",
+    "persistence",
+    "participation"
+  ],
+  "betting": {
+    "min_conviction": 0.68,
+    "min_directional_gates": 3,
+    "required_edge": 0.05,
+    "prob_cap": 0.60
+  },
+  "risk": {
+    "kelly_fraction": 0.15,
+    "max_stake_pct": 0.01,
+    "daily_loss_limit_pct": 0.03,
+    "max_drawdown_pct": 0.12,
+    "max_consecutive_losses": 2,
+    "cooldown_bars": 12,
+    "max_bets_per_hour": 2,
+    "halt_when_unhealthy": true
+  }
+}

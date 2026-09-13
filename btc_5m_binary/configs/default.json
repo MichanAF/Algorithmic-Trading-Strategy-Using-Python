@@ -1,0 +1,33 @@
+{
+  "name": "btc-5m-binary-default",
+  "symbol": "BTCUSDT",
+  "gate_stack": [
+    "data_integrity",
+    "volatility_regime",
+    "trend_alignment",
+    "persistence",
+    "participation"
+  ],
+  "betting": {
+    "mode": "unanimous",
+    "min_conviction": 0.60,
+    "min_directional_gates": 2,
+    "payout_mode": "fixed_odds",
+    "net_payout": 0.90,
+    "required_edge": 0.03,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "tie_policy": "loss"
+  },
+  "risk": {
+    "starting_bankroll": 10000.0,
+    "kelly_fraction": 0.25,
+    "max_stake_pct": 0.02,
+    "daily_loss_limit_pct": 0.05,
+    "max_drawdown_pct": 0.20,
+    "max_consecutive_losses": 3,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 4,
+    "max_concurrent_bets": 1
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "btc-5m-binary-polymarket",
+  "symbol": "BTCUSDT",
+  "venue": "polymarket-btc-5m",
+  "gate_stack": [
+    "data_integrity",
+    "trend_alignment",
+    "persistence"
+  ],
+  "_venue": "Polymarket's btc-up-or-down-5m series on Polygon (Gamma series 10684, market slug btc-updown-5m-<unix window start>). Collateral is USDC. Settles from the Chainlink BTC/USD stream and resolves Up when the end price is GREATER THAN OR EQUAL TO the start, so an exact tie pays the UP side and costs the DOWN side. Minimum order 5 USDC, tick 0.01.",
+  "_gates": "Three gates, one per genuinely distinct question about a yes/no bet on the next five minutes. data_integrity: is the input real? A gapped or stuck feed turns the bet into a coin flip at worse odds. trend_alignment: which way? The only gate whose removal drops the stack below break-even. persistence: does 'which way' mean anything right now? Five-minute BTC returns are mildly negatively autocorrelated, so following a trend only pays in the subset of time when moves extend. Chosen by purpose, then confirmed on 1,042 days never used for selection, where it led every other three-gate combination on expected value per day.",
+  "_gates_not_used": "Deliberately not used. volatility_regime: its floor assumes a spread this bet never crosses; accuracy is flat across the whole volatility range. participation: its verdict adds no information once the other two agree (z = +1.9). momentum_thrust: anti-predictive over the very next bar (z = -8.2). location: harmful as a voter on a trend stack. session: roughly free but spends a slot on a veto with no directional content. Swap persistence for the 'regime' veto if you want exactly one direction vote; it measured equal.",
+  "_throttle": "min_conviction 0.70 gives 36.3 bets a day at 57.0%. Lower is affordable HERE because there is no gas and the taker fee is proportional, so extra bets cost no fixed overhead -- unlike predict.fun. The binding constraint is instead the 5 USDC minimum order: max_stake_pct 0.11% x 36.3 bets/day holds daily risk near 4%, and 0.11% of bankroll must still clear 5 USDC, so this needs roughly 4,500 to run as configured.",
+  "betting": {
+    "mode": "unanimous",
+    "min_conviction": 0.7,
+    "min_directional_gates": 2,
+    "payout_mode": "contract_price",
+    "contract_price": 0.5,
+    "fee_bps": 175.0,
+    "required_edge": 0.04,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "bar_seconds": 300,
+    "latency_seconds": 5,
+    "max_signal_age_seconds": 45,
+    "min_seconds_to_expiry": 60,
+    "tie_policy": "favor_up",
+    "deadband_bps": 0.0
+  },
+  "risk": {
+    "starting_bankroll": 12000.0,
+    "kelly_fraction": 0.2,
+    "max_stake_pct": 0.0011,
+    "min_stake": 5.0,
+    "daily_loss_limit_pct": 0.04,
+    "max_drawdown_pct": 0.15,
+    "max_consecutive_losses": 4,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 6,
+    "max_concurrent_bets": 1,
+    "halt_when_unhealthy": false
+  },
+  "_fees": "The taker fee is shares x 0.07 x p x (1-p), which peaks at p = 0.5 -- exactly where a five-minute direction strategy wants to trade. At 0.50 that is 1.75 cents a share, 3.5% of a 0.50 notional, on every bet. fee_bps 175 is that 0.50-point equivalent in basis points of the 1.00 face value, so the backtest prices it honestly; the live path uses VenueRules.fee_per_share, which is exact at every price. The MAKER fee is zero, so posting instead of taking removes this cost entirely, at the price of fill risk. That is the single biggest execution lever here.",
+  "_health": "halt_when_unhealthy is off on purpose. It is a sticky stop-and-review, and the rolling hit rate can only improve by placing more bets, so halting freezes the measurement that would clear it. Off, an unhealthy stretch halves the stake instead and the strategy can recover on its own.",
+  "_sizing": "max_stake_pct 0.11% x 36.3 bets/day holds total daily risk near 4%. Polymarket's minimum order is 5 USDC, so 0.11% of bankroll must clear that with headroom: on 12,000 the cap is 13.20 a bet. Below roughly 7,000 the cap lands on the minimum, and a cap at the minimum stops the strategy for good on the first loss."
+}

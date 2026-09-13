@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Locally fetched or generated market data
+btc_5m*.csv
+eth_5m*.csv
