@@ -1,0 +1,94 @@
+# Measure, on the development year only, whether who was aggressing in the
+# last minute or three before a window opens says anything about the window.
+#
+# That is the question behind the taker_flow gate's `source`, `window`, `mode`
+# and `min_abs_z` values.  It is answered here with Binance's 1-minute archives
+# for the same year the fade hypothesis was developed on -- the year ending
+# 2024-09-13 -- and nowhere else.  No holdout year is fetched by this
+# workflow, so whatever is read from its summary can be written into a config
+# and tested once on history that config has never seen.
+#
+# Like the fade workflow it has no inputs: the grid it prints is the whole
+# menu, and the choice from it is made by a person and written down.
+
+name: Flow, development year
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/btc5m/**'
+      - '.github/workflows/flow-dev.yml'
+  workflow_dispatch:
+
+jobs:
+  flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # The same development year as fade-hypothesis.yml, at both intervals.
+      # The 5-minute file carries the bar's own taker share; the 1-minute file
+      # is what the last-N-minutes windows are pooled from.
+      - name: Fetch the development year at 5 minutes
+        run: |
+          python -m btc5m fetch --year --end 2024-09-13 -o dev.csv | tee fetch-dev.log
+
+      - name: Fetch the development year at 1 minute
+        run: |
+          python -m btc5m fetch --interval 1m --year --end 2024-09-13 -o dev-1m.csv | tee fetch-dev-1m.log
+
+      # The config only supplies the break-even (200 bps) and the z-score span;
+      # the flow tables read no gate stack.
+      - name: Does the pre-open flow predict the window?
+        run: |
+          python -m btc5m flow --data dev.csv --minute dev-1m.csv \
+            --config configs/fade-5m.json | tee flow-dev.log
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib
+
+          def text(log):
+              return pathlib.Path(log).read_text().strip() if os.path.exists(log) else ""
+
+          print("## Pre-open order flow, development year only\n")
+          for label, log in (("5-minute bars", "fetch-dev.log"),
+                             ("1-minute bars", "fetch-dev-1m.log")):
+              lines = text(log).splitlines()
+              print(f"- **{label}**: `{lines[-2] if len(lines) > 1 else 'fetch failed'}`")
+          print()
+          print("Read the first table's sign before anything else: negative means")
+          print("the flow reverted over the next window (fade), positive means it")
+          print("carried (follow). Inside the noise band it said nothing. The grid")
+          print("shows what a |z| floor buys. This is the year ending 2024-09-13,")
+          print("the development year; nothing later was fetched or scored here.\n")
+          print("```text")
+          print(text("flow-dev.log") or "flow did not run")
+          print("```")
+          PY
+
+      - name: Keep the minute bars
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-1m-dev-year
+          path: btc_5m_binary/dev-1m.csv
+          if-no-files-found: warn
+          retention-days: 30

@@ -5,10 +5,12 @@
     python -m btc5m gates    --data btc_5m.csv       # what is each gate worth?
     python -m btc5m compare  --data btc_5m.csv       # which stack should I run?
     python -m btc5m overlap  --data btc_5m.csv       # are the gates independent?
+    python -m btc5m flow     --data btc_5m.csv --minute btc_1m.csv   # does pre-open flow predict?
     python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
     python -m btc5m probe    --testnet                     # see predict.fun's real payload
     python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
+    python -m btc5m fetch    --interval 1m --year -o btc_1m.csv      # minute bars for --minute
     python -m btc5m menu                             # the gate menu
 """
 
@@ -20,13 +22,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .attribution import compare_stacks, gate_edge, render_table
+from .attribution import (compare_stacks, flow_correlation, flow_edge, gate_edge,
+                          render_flow, render_table)
 from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
-from .data import (BarSeries, fetch_binance_dump, fetch_history,
-                   fetch_klines, load_csv, synthetic)
+from .data import (INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
+                   fetch_history, fetch_klines, load_csv, synthetic)
 from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .features import build_features
@@ -73,6 +76,9 @@ def _add_data_args(p: argparse.ArgumentParser, reference: bool = True) -> None:
     if reference:
         src.add_argument("--reference", metavar="CSV",
                          help="correlated series (ETH) for the cross_asset gate")
+    src.add_argument("--minute", metavar="CSV",
+                     help="1-minute bars of the same symbol, read when "
+                          "gates.taker_flow.source is 1m (fetch --interval 1m)")
 
 
 def _add_config_args(p: argparse.ArgumentParser) -> None:
@@ -175,6 +181,29 @@ def _load_reference(args) -> BarSeries | None:
     return load_csv(path) if path else None
 
 
+def _load_minute(args) -> BarSeries | None:
+    path = getattr(args, "minute", None)
+    if not path:
+        return None
+    minute = load_csv(path)
+    if minute.bar_seconds != 60:
+        raise SystemExit(f"--minute {path} holds {minute.bar_seconds}-second "
+                         f"bars, not 1-minute ones; fetch it with --interval 1m")
+    if minute.taker_buy is None:
+        raise SystemExit(f"--minute {path} has no taker_buy column; only a "
+                         f"binance fetch carries it")
+    return minute
+
+
+def _note_minute(cfg: StrategyConfig, minute: BarSeries | None) -> None:
+    """A 1m-sourced taker_flow gate with no minute series never fires."""
+    tf = cfg.gates.taker_flow
+    if tf.source == "1m" and minute is None and "taker_flow" in cfg.gate_stack:
+        print("note: gates.taker_flow.source is 1m but no --minute CSV was "
+              "given, so taker_flow stays in warm-up and never votes.",
+              file=sys.stderr)
+
+
 def _warn_if_synthetic(args) -> None:
     if getattr(args, "synthetic", None) is not None:
         print("note: synthetic bars. These validate the machinery, not the edge.\n",
@@ -189,7 +218,10 @@ def cmd_backtest(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    result = run_backtest(series, cfg, reference=_load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    result = run_backtest(series, cfg, reference=_load_reference(args),
+                          minute=minute)
     print(result.summary())
     if args.json:
         Path(args.json).write_text(json.dumps({
@@ -213,7 +245,9 @@ def cmd_signal(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    fs = build_features(series, cfg, _load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    fs = build_features(series, cfg, _load_reference(args), minute=minute)
     engine = SignalEngine(cfg)
     warmup = engine.warmup_bars(fs)
     index = args.bar if args.bar is not None else len(series) - 1
@@ -254,12 +288,62 @@ def cmd_gates(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    stats = gate_edge(series, cfg, reference=_load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    stats = gate_edge(series, cfg, reference=_load_reference(args), minute=minute)
     print(render_table(stats, "What is each gate's directional vote worth?"))
     print("\nRead z before accuracy: it is how many standard errors the hit rate")
     print("sits above break-even. Under +2, the gate has shown you nothing yet.")
     print("Gates can be worth less alone than in combination -- a filter that is")
     print("neutral on its own can still sharpen a stack. Check with `compare`.")
+    return 0
+
+
+def _number_list(text: str, cast, flag: str) -> list:
+    try:
+        values = [cast(part) for part in text.split(",") if part.strip()]
+    except ValueError:
+        raise SystemExit(f"{flag} expects comma-separated numbers, got {text!r}")
+    if not values:
+        raise SystemExit(f"{flag} is empty")
+    return values
+
+
+def cmd_flow(args) -> int:
+    """Does who was aggressing just before the window opens predict it?"""
+    cfg = _build_config(args)
+    series = _load_series(args)
+    _warn_if_synthetic(args)
+    minute = _load_minute(args)
+    windows = _number_list(args.windows, int, "--windows")
+    thresholds = _number_list(args.thresholds, float, "--thresholds")
+    if any(w < 0 for w in windows):
+        raise SystemExit("--windows takes minutes >= 1, or 0 for the bar's own share")
+    if series.taker_buy is None and 0 in windows:
+        raise SystemExit("--data has no taker_buy column, so the full-bar share "
+                         "cannot be read; fetch the series from binance")
+    if minute is None:
+        dropped = [w for w in windows if w > 0]
+        windows = [w for w in windows if w == 0]
+        if dropped:
+            print(f"note: no --minute CSV, so the minute windows {dropped} are "
+                  f"skipped; fetch one with `fetch --interval 1m`.",
+                  file=sys.stderr)
+        if not windows:
+            raise SystemExit("nothing to measure: give --minute, or --windows 0")
+
+    corrs = flow_correlation(series, cfg, minute, windows)
+    cells = flow_edge(series, cfg, minute, windows, thresholds)
+    print(render_flow(corrs, cells,
+                      "Does the taker share just before the open predict the window?"))
+    print("\nRead the first table's sign before anything else: negative means the")
+    print("flow reverted over the next window (bet against it: fade), positive")
+    print("means it carried (follow). Inside the noise band it said nothing.")
+    print("The grid then shows what a |z| floor buys: fewer signals, and whether")
+    print("the ones that remain beat break-even. follow and fade are exact")
+    print("complements on the same signals, so only the better side has a z.")
+    print("This is a development-year measurement. Pick values from it, write")
+    print("them into a config, and test that config once on unseen history.")
     return 0
 
 
@@ -412,6 +496,9 @@ def cmd_fetch(args) -> int:
     # instead of 106 requests, and -- unlike api.binance.com, which answers a US
     # IP with 451 -- not geo-restricted.  So a long Binance request goes there,
     # and the REST API is only for the recent tail or another exchange.
+    bar_seconds = INTERVAL_SECONDS[args.interval]
+    if args.year:
+        args.limit = 365 * 86_400 // bar_seconds
     source = args.source
     if source == "auto":
         source = "dump" if (args.exchange == "binance"
@@ -440,7 +527,7 @@ def cmd_fetch(args) -> int:
 
         series = fetch_binance_dump(args.symbol or "BTCUSDT", args.limit,
                                     pause_seconds=args.pause, now=end,
-                                    progress=show_dump)
+                                    progress=show_dump, interval=args.interval)
         print()
     elif args.limit > 1000:
         def show(held: int, wanted: int) -> None:
@@ -448,10 +535,12 @@ def cmd_fetch(args) -> int:
 
         series = fetch_history(args.exchange, args.symbol, args.limit,
                                pause_seconds=args.pause, progress=show,
-                               end_ts=int(end.timestamp()) if end else None)
+                               end_ts=int(end.timestamp()) if end else None,
+                               interval=args.interval)
         print()
     else:
-        series = fetch_klines(args.exchange, args.symbol, args.limit)
+        series = fetch_klines(args.exchange, args.symbol, args.limit,
+                              interval=args.interval)
 
     if len(series) < args.limit:
         where = "binance's archives" if source == "dump" else args.exchange
@@ -460,8 +549,9 @@ def cmd_fetch(args) -> int:
               f"for {series.symbol}, or a period is missing.")
 
     path = series.write_csv(args.out)
-    days = len(series) * 300 / 86_400
-    print(f"wrote {len(series):,} closed 5m bars ({days:.1f} days) to {path}")
+    days = len(series) * bar_seconds / 86_400
+    print(f"wrote {len(series):,} closed {args.interval} bars ({days:.1f} days) "
+          f"to {path}")
     print(f"  {series.time_at(0):%Y-%m-%d %H:%M} .. "
           f"{series.time_at(-1):%Y-%m-%d %H:%M} UTC")
     gaps = series.gaps()
@@ -542,6 +632,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config_args(p)
     p.set_defaults(func=cmd_gates)
 
+    p = sub.add_parser("flow", help="does the taker share just before the open "
+                                    "predict the window?")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--windows", default="1,2,3,5,0", metavar="MIN,...",
+                   help="minutes before the open to pool from --minute; 0 is "
+                        "the 5m bar's own share (default: 1,2,3,5,0)")
+    p.add_argument("--thresholds", default="1,1.5,2,2.5", metavar="Z,...",
+                   help="|z| floors to score (default: 1,1.5,2,2.5)")
+    p.set_defaults(func=cmd_flow)
+
     p = sub.add_parser("compare", help="score candidate gate stacks")
     _add_data_args(p)
     _add_config_args(p)
@@ -589,15 +690,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_live)
 
-    p = sub.add_parser("fetch", help="download closed 5m candles to CSV")
+    p = sub.add_parser("fetch", help="download closed candles to CSV")
     p.add_argument("--exchange", default="binance",
                    choices=("binance", "coinbase", "kraken"))
     p.add_argument("--symbol")
+    p.add_argument("--interval", default="5m", choices=sorted(INTERVAL_SECONDS),
+                   help="candle length (default 5m). 1m is binance only and "
+                        "is what --minute reads")
     p.add_argument("--limit", type=int, default=1000,
                    help="bars to fetch; above 1000 pages backwards "
-                        "(a year is 105120). kraken cannot page")
-    p.add_argument("--year", dest="limit", action="store_const", const=105_120,
-                   help="shorthand for --limit 105120")
+                        "(a year is 105120 at 5m). kraken cannot page")
+    p.add_argument("--year", action="store_true",
+                   help="one year of bars: 105120 at 5m, 525600 at 1m")
     p.add_argument("--pause", type=float, default=0.25,
                    help="seconds between requests (default 0.25)")
     p.add_argument("--source", default="auto", choices=("auto", "dump", "api"),

@@ -88,12 +88,46 @@ class FeatureSet:
         return n
 
 
+def minute_taker_share(ts: np.ndarray, minute: BarSeries,
+                       window: int) -> np.ndarray:
+    """Taker-buy share over the last ``window`` minutes before each bar close.
+
+    Bar ``i`` of the 5-minute series closes at ``ts[i]``, the instant the next
+    window opens, so the minutes that count are the 1-minute bars closing in
+    ``(ts[i] - 60 * window, ts[i]]``.  Pooled, not averaged: the share is the
+    summed taker volume over the summed total volume, so a busy minute weighs
+    more than a quiet one.  NaN unless every minute in the span is present with
+    a finite taker figure -- a missing minute would silently shrink the window,
+    and a share over nothing is not a share.
+    """
+    ts = np.asarray(ts, dtype=np.int64)
+    out = np.full(len(ts), np.nan)
+    if window < 1 or minute is None or len(minute) == 0 or minute.taker_buy is None:
+        return out
+    mts = minute.ts
+    taker = np.asarray(minute.taker_buy, dtype=float)
+    finite = np.isfinite(taker)
+    cum_taker = np.concatenate(([0.0], np.cumsum(np.where(finite, taker, 0.0))))
+    cum_volume = np.concatenate(([0.0], np.cumsum(minute.volume)))
+    cum_finite = np.concatenate(([0], np.cumsum(finite.astype(np.int64))))
+    hi = np.searchsorted(mts, ts, side="right")
+    lo = np.searchsorted(mts, ts - 60 * window, side="right")
+    present = (hi - lo == window) & (cum_finite[hi] - cum_finite[lo] == window)
+    volume = cum_volume[hi] - cum_volume[lo]
+    ok = present & (volume > 0)
+    out[ok] = (cum_taker[hi] - cum_taker[lo])[ok] / volume[ok]
+    return out
+
+
 def build_features(series: BarSeries, cfg: StrategyConfig,
-                   reference: BarSeries | None = None) -> FeatureSet:
+                   reference: BarSeries | None = None,
+                   minute: BarSeries | None = None) -> FeatureSet:
     """Compute the factor set for ``series`` under ``cfg``.
 
     ``reference`` is an optional correlated series (ETH by default) used only by
-    the cross-asset gate; it is matched to the BTC bars by timestamp.
+    the cross-asset gate; it is matched to the BTC bars by timestamp.  ``minute``
+    is an optional 1-minute series of the same symbol, read only when
+    ``gates.taker_flow.source`` is ``"1m"``.
     """
     g = cfg.gates
     o, h, l, c, v = series.open, series.high, series.low, series.close, series.volume
@@ -210,15 +244,18 @@ def build_features(series: BarSeries, cfg: StrategyConfig,
     # case the features are NaN and the gate reports itself as warming up
     # rather than voting on nothing.
     tf = g.taker_flow
-    if series.taker_buy is not None:
+    if tf.source == "1m":
+        share = (minute_taker_share(series.ts, minute, tf.window)
+                 if minute is not None else np.full(n, np.nan))
+    elif series.taker_buy is not None:
         with np.errstate(invalid="ignore", divide="ignore"):
             raw = np.where(v > 0, series.taker_buy / v, np.nan)
         share = raw if tf.window <= 1 else ind.sma(raw, tf.window)
-        f["taker_ratio"] = share
-        f["taker_z"] = ind.zscore(share, tf.z_window)
     else:
-        f["taker_ratio"] = np.full(n, np.nan)
-        f["taker_z"] = np.full(n, np.nan)
+        share = np.full(n, np.nan)
+    f["taker_ratio"] = share
+    f["taker_z"] = (ind.zscore(share, tf.z_window) if np.isfinite(share).any()
+                    else np.full(n, np.nan))
 
     # -- clock -------------------------------------------------------------- #
     f["hour_utc"] = ((series.ts // 3600) % 24).astype(float)

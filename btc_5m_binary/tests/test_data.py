@@ -452,7 +452,8 @@ def test_the_dump_fetch_stitches_archives_into_one_series(monkeypatch):
     # Two monthly archives, contiguous.
     now = datetime(2026, 3, 1, tzinfo=timezone.utc)
     months, _ = data._dump_periods(400, now)
-    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", iv="5m", ym=m)
+            for m in months[-2:]]
     served[urls[0]] = _zip_klines([(opened + i * 300, "100.5")
                                    for i in range(200)])
     served[urls[1]] = _zip_klines([(opened + (200 + i) * 300, "101.5")
@@ -471,7 +472,8 @@ def test_a_missing_archive_is_skipped_and_shows_up_as_a_gap(monkeypatch):
     opened = 1_757_675_400
     now = datetime(2026, 3, 1, tzinfo=timezone.utc)
     months, _ = data._dump_periods(400, now)
-    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", iv="5m", ym=m)
+            for m in months[-2:]]
     # Only the second archive exists, and it starts well after the first would.
     served = {urls[1]: _zip_klines(
         [(opened, "100.5"), (opened + 3_000, "101.5")])}
@@ -592,3 +594,89 @@ def test_taker_buy_length_is_validated():
     with pytest.raises(ValueError, match="taker_buy length"):
         BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones,
                   volume=ones, taker_buy=np.ones(2))
+
+
+# --------------------------------------------------------------------------- #
+# 1-minute bars: the same paths, a different interval
+# --------------------------------------------------------------------------- #
+
+def test_bar_length_is_a_fact_of_the_data():
+    five = _bars(n=6)
+    assert five.bar_seconds == 300
+    ts = 1_757_675_700 + np.arange(6) * 60
+    ones = np.ones(6)
+    one = BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones, volume=ones)
+    assert one.bar_seconds == 60
+    # Two 5-minute bars ten bars apart are still 5-minute bars.
+    sparse = BarSeries(ts=[1_757_675_700, 1_757_675_700 + 3000], open=[1, 1],
+                       high=[1, 1], low=[1, 1], close=[1, 1], volume=[1, 1])
+    assert sparse.bar_seconds == 300
+    assert sparse.gaps() == [(1, 9)]
+    assert five[:1].bar_seconds == 300                # one bar: the default
+
+
+def test_gaps_on_a_minute_series_are_counted_in_minutes():
+    ts = 1_757_675_700 + np.array([0, 60, 120, 360, 420]) * 1
+    ones = np.ones(5)
+    s = BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones, volume=ones)
+    assert s.bar_seconds == 60
+    assert s.gaps() == [(3, 3)]                       # 180, 240, 300 missing
+
+
+def test_minute_archives_come_from_the_1m_path():
+    url = data._DUMP_MONTH.format(sym="BTCUSDT", iv="1m", ym="2024-08")
+    assert url.endswith("/klines/BTCUSDT/1m/BTCUSDT-1m-2024-08.zip")
+    day = data._DUMP_DAY.format(sym="BTCUSDT", iv="1m", ymd="2024-09-01")
+    assert day.endswith("/klines/BTCUSDT/1m/BTCUSDT-1m-2024-09-01.zip")
+    opened = 1_757_675_400
+    rows = data._dump_rows(_zip_klines([(opened, "100.5")]), "BTCUSDT", 60)
+    assert rows[0][0] == opened + 60                  # a minute, not five
+    # A year of minutes is the same twelve-odd monthly archives.
+    now = datetime(2024, 9, 13, tzinfo=timezone.utc)
+    months, days = data._dump_periods(525_600, now, 60)
+    assert months == data._dump_periods(105_120, now, 300)[0]
+    assert days == data._dump_periods(105_120, now, 300)[1]
+
+
+def test_the_dump_fetch_honours_the_interval(monkeypatch):
+    opened = 1_757_675_400
+    now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    months, _ = data._dump_periods(400, now, 60)
+    wanted = data._DUMP_MONTH.format(sym="BTCUSDT", iv="1m", ym=months[-1])
+    asked = []
+
+    def fake(request, timeout=None):
+        asked.append(request.full_url)
+        if request.full_url != wanted:
+            raise data.urllib.error.HTTPError(request.full_url, 404, "nope", None, None)
+        return _Response_bytes(_zip_klines([(opened + i * 60, "100.5")
+                                            for i in range(400)]))
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    series = data.fetch_binance_dump(bars=400, now=now, interval="1m")
+    assert len(series) == 400
+    assert list(np.diff(series.ts)) == [60] * 399
+    assert series.bar_seconds == 60
+    assert series.gaps() == []
+    assert all("/1m/" in url for url in asked)
+    assert not any("/5m/" in url for url in asked)
+
+
+def test_the_rest_paths_honour_the_interval(monkeypatch):
+    kline = [1_757_675_400_000, "1", "2", "0.5", "1.5", "10", 1_757_675_459_999]
+    row = data._parse_candles("binance", [kline], "BTCUSDT", 60)[0]
+    assert row[0] == 1_757_675_400 + 60
+    fake = _FakeBinance(bars=50, last_close=1_757_675_700)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    data.fetch_history("binance", bars=10, pause_seconds=0, interval="1m")
+    assert "interval=1m" in fake.calls[0]
+
+
+def test_only_binance_serves_minute_candles():
+    with pytest.raises(ValueError, match="5m candles only"):
+        data.fetch_klines("coinbase", interval="1m")
+    with pytest.raises(ValueError, match="5m candles only"):
+        data.fetch_history("coinbase", bars=10, interval="1m")
+    with pytest.raises(ValueError, match="unsupported interval"):
+        data.fetch_binance_dump(bars=10, interval="15m")

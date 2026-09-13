@@ -46,8 +46,9 @@ def test_end_date_reaches_the_archive_fetch(monkeypatch, tmp_path, capsys):
 
     seen = {}
 
-    def fake_dump(symbol, bars, pause_seconds=0.0, now=None, progress=None):
-        seen.update(symbol=symbol, bars=bars, now=now)
+    def fake_dump(symbol, bars, pause_seconds=0.0, now=None, progress=None,
+                  interval="5m"):
+        seen.update(symbol=symbol, bars=bars, now=now, interval=interval)
         return synthetic(400, seed=1)
 
     monkeypatch.setattr(cli, "fetch_binance_dump", fake_dump)
@@ -57,6 +58,7 @@ def test_end_date_reaches_the_archive_fetch(monkeypatch, tmp_path, capsys):
     assert code == 0
     assert seen["now"] == datetime(2024, 9, 13, tzinfo=timezone.utc)
     assert seen["bars"] == 105_120
+    assert seen["interval"] == "5m"
     assert out_path.exists()
 
 
@@ -225,3 +227,29 @@ def test_an_invalid_gate_name_is_reported(capsys):
 def test_synthetic_runs_carry_a_warning(capsys):
     _, out = run(["gates", "--synthetic", "3000"], capsys)
     assert "synthetic" in out.err.lower()
+
+
+def test_a_year_of_minute_bars_is_525600_of_them(monkeypatch, tmp_path, capsys):
+    import btc5m.cli as cli
+    from btc5m.data import synthetic
+
+    seen = {}
+
+    def fake_dump(symbol, bars, pause_seconds=0.0, now=None, progress=None,
+                  interval="5m"):
+        seen.update(bars=bars, interval=interval)
+        return synthetic(400, seed=1)
+
+    monkeypatch.setattr(cli, "fetch_binance_dump", fake_dump)
+    code, out = run(["fetch", "--interval", "1m", "--year",
+                     "-o", str(tmp_path / "minutes.csv")], capsys)
+    assert code == 0
+    assert seen == {"bars": 525_600, "interval": "1m"}
+    assert "closed 1m bars" in out.out
+
+
+def test_minute_candles_are_refused_off_binance_before_any_request(capsys):
+    code, out = run(["fetch", "--exchange", "coinbase", "--interval", "1m",
+                     "--limit", "10", "--source", "api"], capsys)
+    assert code == 2
+    assert "5m candles only" in out.err

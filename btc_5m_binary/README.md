@@ -237,6 +237,28 @@ or inverts, at a five-minute horizon on BTC is an empirical question, and
 values ship as placeholders and are chosen through the pre-registration
 protocol, not by sweeping.
 
+Flow decays over minutes, so the whole five-minute bar can be the wrong place
+to read it. `taker_flow.source = "1m"` reads the last `window` *minutes*
+before the open instead, pooled (summed taker volume over summed volume) from
+a 1-minute series of the same symbol passed with `--minute`:
+
+```bash
+python -m btc5m fetch --interval 1m --year --end 2024-09-13 -o dev-1m.csv
+python -m btc5m flow --data dev.csv --minute dev-1m.csv --config configs/fade-5m.json
+python -m btc5m backtest --data dev.csv --minute dev-1m.csv --config my-flow.json
+```
+
+`flow` is the instrument for choosing `source`, `window`, `mode` and
+`min_abs_z`. It prints the raw correlation of the pre-open share with the
+window's direction for the last 1, 2, 3 and 5 minutes and for the bar itself
+-- the sign says follow or fade, a noise band says whether it says anything --
+then the follow and fade accuracy at each |z| floor. It runs on the
+development year only (`.github/workflows/flow-dev.yml`, the year ending
+2024-09-13): read it, write the values into a config, test that config once on
+history it has never seen. Without a minute series a 1m-sourced gate stays in
+warm-up and never votes, which the CLI says out loud rather than betting on
+nothing.
+
 ### Location and structure
 | Gate | Factors |
 |---|---|
@@ -1158,7 +1180,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            348 tests
+tests/            398 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1168,7 +1190,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 348 passed
+python -m pytest tests/ -q      # 398 passed
 ```
 
 ---
