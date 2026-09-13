@@ -171,4 +171,38 @@ stops; it does not fix that.
   fails.
 - **Seen-year reference at this sizing** (run 34755963339): 2023 +2.21%,
   2024 +1.53%, 2025 -0.70%, 2026 +1.94%; no halts, drawdowns at most 6.41%.
-- **Result:** pending the first run of `fade-flow-sized-hypothesis.yml`.
+- **Result** ([run 34756636545](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34756636545),
+  the first and only run): **FAIL**, by the letter, on the significance
+  clause. On the fresh holdout the config placed 5,020 bets at 53.23% +/-
+  0.70%, +1.23% over break-even -- above the +1.0% floor, no halt, drawdown
+  5.46% -- but 1.8 standard errors above break-even, not 2. The clause
+  needed about +1.4% on that many bets; the year delivered +1.23%.
+
+  Five years, one signal (the stake change moves P&L and drawdown, not the
+  hit rate):
+
+  | year | status | bets | hit rate | vs 52.00% | on its own |
+  |---|---|---|---|---|---|
+  | **to 2022-09-13** | **fresh, this run** | 5,020 | **53.23%** | **+1.23%** | z 1.8, not significant |
+  | to 2023-09-13 | fresh for the second run | 4,964 | 54.21% | +2.21% | significant |
+  | to 2024-09-13 | development | 4,632 | 53.53% | +1.53% | significant |
+  | to 2025-09-13 | seen | 4,085 | 51.30% | -0.70% | negative |
+  | to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% | significant |
+
+  Signal level on the fresh year: taker_flow 53.34% (z +1.9),
+  mean_reversion 53.34% (z +1.0); both positive, neither significant alone.
+
+  What it says. Pooled over the four years the values were not chosen on
+  (every year but the development one): 9,638 wins in 18,109 graded bets,
+  53.22%, +1.22%, about 3.3 standard errors above break-even, with a
+  year-to-year range from -0.70% to +2.21%. The two pre-registered fresh
+  years alone pool to 53.71% on 9,962 bets, +1.71%, z about 3.4. The edge
+  looks real and small; a single year of 5,000 bets has a standard error
+  of 0.7%, so a per-year bar of "significant at two standard errors"
+  needs +1.4% and a true +1.2% edge clears it less than half the time.
+  That is a statement about the bar's power, made after reading the
+  result, and so it cannot rescue this run: the run fails. It can shape
+  the next pre-registration, if there is one, before the next fresh year
+  (the one ending 2021-09-13) is fetched.
+
+  This file and `configs/fade-flow-sized-5m.json` are not edited.

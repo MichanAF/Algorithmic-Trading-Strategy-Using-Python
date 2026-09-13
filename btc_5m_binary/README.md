@@ -824,8 +824,29 @@ sits at about 2.3 times one. On the seen years that sizing halted in none,
 with drawdowns of at most 6.4% and yearly results from −4.7% to +20.5% --
 none of it evidence, all of it burned. The fresh holdout is the year ending
 2022-09-13, the pass bar is unchanged, and
-`.github/workflows/fade-flow-sized-hypothesis.yml` runs it once. The result
-goes here and in `DECISIONS.md`, whichever way it falls.
+`.github/workflows/fade-flow-sized-hypothesis.yml` ran it once
+([run 34756636545](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34756636545)).
+
+**It failed, by the letter, on the significance clause.** 5,020 bets at
+53.23% ± 0.70%, +1.23% over break-even, no halt, drawdown 5.46% -- and 1.8
+standard errors above break-even where the bar asked for 2. On 5,000 bets
+that clause needs about +1.4%.
+
+| year | status | bets | hit rate | vs 52.00% | on its own |
+|---|---|---|---|---|---|
+| **to 2022-09-13** | **fresh, this run** | 5,020 | **53.23%** | **+1.23%** | z 1.8 |
+| to 2023-09-13 | fresh for the second run | 4,964 | 54.21% | +2.21% | significant |
+| to 2024-09-13 | development | 4,632 | 53.53% | +1.53% | significant |
+| to 2025-09-13 | seen | 4,085 | 51.30% | −0.70% | negative |
+| to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% | significant |
+
+Pooled over the four years the values were not chosen on: 53.22% on 18,109
+bets, +1.22%, z ≈ 3.3, range −0.70% to +2.21%, before gas. The edge looks
+real and small, and a per-year bar of two standard errors is one a true
++1.2% edge clears less than half the time -- a fact about the bar's power
+that was noticed after the result and therefore cannot rescue this run.
+Three pre-registered tests so far: one pass, two fails on a single clause
+each. The config is not edited; the account is in `DECISIONS.md`.
 
 ### Conviction now predicts accuracy, which it did not before
 
