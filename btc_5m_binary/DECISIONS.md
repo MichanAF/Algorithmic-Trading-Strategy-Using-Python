@@ -236,4 +236,42 @@ stops; it does not fix that.
   does not halt. Anything less fails.
 - **Reference, outside the bar:** the years ending 2024-09-13, 2025-09-13
   and 2026-09-13.
-- **Result:** pending the first run of `fade-flow-pooled-hypothesis.yml`.
+- **Result** ([run 34757815880](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34757815880),
+  the first and only run): **PASS**, by the letter, and by the thinnest
+  margin the bar allowed. The fresh year placed 4,797 bets at 52.48% +/-
+  0.72%, +0.48% over break-even, no halt, drawdown 7.88% -- right at the
+  52.4% the bar asked of it. Pooled over the three fresh years: 7,868 wins
+  in 14,758 graded bets, 53.31%, +1.31% over break-even, standard
+  error 0.41%, z +3.2. Clauses (a), (b) and (c) all hold.
+
+  Six years, one signal:
+
+  | year | status | bets | hit rate | vs 52.00% |
+  |---|---|---|---|---|
+  | **to 2021-09-13** | **fresh, this run** | 4,797 | **52.48%** | **+0.48%** |
+  | to 2022-09-13 | fresh, third run | 5,020 | 53.23% | +1.23% |
+  | to 2023-09-13 | fresh, second run | 4,964 | 54.21% | +2.21% |
+  | to 2024-09-13 | development | 4,632 | 53.53% | +1.53% |
+  | to 2025-09-13 | seen | 4,085 | 51.30% | -0.70% |
+  | to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% |
+
+  Signal level on the fresh year: mean_reversion 54.48% (z +1.8),
+  taker_flow 52.31% (z +0.4). The taker gate did almost nothing in
+  2020-21; the fade gate carried what there was.
+
+  What it says. The pass is real and it is thin: the new year sits at the
+  edge of the range a worthless signal would produce, and the config said
+  in advance that such a signal passes this bar one time in four. Read
+  with the earlier runs rather than instead of them: pooled over the five
+  years the values were not chosen on, 12,155 wins in 22,905 graded bets,
+  53.07%, +1.07% over break-even, z +3.2, with a 95% range of
+  about +0.4% to +1.7% and a year-to-year spread from
+  -0.70% to +2.21%. The best estimate of the edge is about +1.1% of hit
+  rate, or +2% of stake per bet, before gas. Four pre-registered tests:
+  two passes, two fails on a single clause each; every one of them ended
+  above break-even.
+
+  This file and `configs/fade-flow-pooled-5m.json` are not edited. The
+  program of fresh-year tests on this signal ends here; what remains is
+  economics -- bankroll, venue, gas -- and the live-quote question, neither
+  of which a backtest can answer.

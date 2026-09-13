@@ -859,8 +859,32 @@ halt. Written before the fetch, and with its own weakness written beside it:
 given the two years already known, the new year must come in at about 52.4%
 or better; a worthless signal would still pass about one time in four, a
 +1.2% edge about seven times in eight.
-`.github/workflows/fade-flow-pooled-hypothesis.yml` runs it once. The result
-goes here and in `DECISIONS.md`, whichever way it falls.
+`.github/workflows/fade-flow-pooled-hypothesis.yml` ran it once
+([run 34757815880](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34757815880)).
+
+**It passed, by the letter, and by the thinnest margin the bar allowed.** The
+fresh year: 4,797 bets at 52.48% ± 0.72%, +0.48%, no halt -- right at the
+52.4% the bar asked. Pooled over the three fresh years: 53.31% on 14,758
+bets, +1.31%, z +3.2.
+
+| year | status | bets | hit rate | vs 52.00% |
+|---|---|---|---|---|
+| **to 2021-09-13** | **fresh, this run** | 4,797 | **52.48%** | **+0.48%** |
+| to 2022-09-13 | fresh, third run | 5,020 | 53.23% | +1.23% |
+| to 2023-09-13 | fresh, second run | 4,964 | 54.21% | +2.21% |
+| to 2024-09-13 | development | 4,632 | 53.53% | +1.53% |
+| to 2025-09-13 | seen | 4,085 | 51.30% | −0.70% |
+| to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% |
+
+Read it with the earlier runs, not instead of them. Pooled over the five years
+the values were not chosen on: 53.07% on 22,905 bets, +1.07%, z +3.2,
+95% range about +0.4% to +1.7%, before gas. The best
+estimate of the edge is about +1.1% of hit rate, +2% of stake per bet. Four
+pre-registered tests on unseen years: two passes, two fails on a single
+clause each, every one above break-even. The program of fresh-year tests on
+this signal ends here. What is left is not a backtest question: bankroll,
+venue and gas decide whether +2% of stake is money, and only a live quote
+says whether the market is near 50/50 when these gates fire.
 
 ### Conviction now predicts accuracy, which it did not before
 
