@@ -115,3 +115,36 @@ the fade config) or from the year ending 2023-09-13.
   This file and `configs/fade-flow-5m.json` are not edited. Any change --
   to the risk block, the stake, the venue's cost -- is a new hypothesis,
   and the next fresh year is the one ending 2022-09-13.
+
+## Decision 8: risk sizing for a 4,600-bet year -- pending
+
+The halt clause failed because the risk block was sized for 235 bets a
+year. With a stake of s (a fraction of bankroll) and N bets, the typical
+peak-to-trough drawdown of an even walk is about s x sqrt(N): 0.25% x
+sqrt(4,600) is 17%, so a 15% limit halts an ordinary year. Four sizings
+were run on the four years already burned for this signal
+([run 34755963339](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34755963339));
+the year ending 2022-09-13 was not fetched. Hit rates differ slightly from
+the pinned rows where the pinned run halted and stopped betting.
+
+| sizing | stake | limit | year | bets | hit rate | vs 52.00% | net P&L | max drawdown | halted |
+|---|---|---|---|---|---|---|---|---|---|
+| pinned | 0.25% | 15% | 2023 | 4,663 | 54.31% | +2.31% | +62.6% | 15.07% | yes |
+| pinned | 0.25% | 15% | 2024 | 4,632 | 53.53% | +1.53% | +37.5% | 9.24% | no |
+| pinned | 0.25% | 15% | 2025 | 3,590 | 51.14% | -0.86% | -14.1% | 15.16% | yes |
+| pinned | 0.25% | 15% | 2026 | 4,087 | 53.94% | +1.94% | +42.6% | 7.72% | no |
+| wider | 0.25% | 30% | 2023 | 4,964 | 54.21% | +2.21% | +64.1% | 15.49% | no |
+| wider | 0.25% | 30% | 2025 | 4,085 | 51.30% | -0.70% | -13.3% | 16.20% | no |
+| smaller | 0.10% | 15% | 2023 | 4,964 | 54.21% | +2.21% | +20.5% | 6.41% | no |
+| smaller | 0.10% | 15% | 2024 | 4,632 | 53.53% | +1.53% | +13.3% | 3.37% | no |
+| smaller | 0.10% | 15% | 2025 | 4,085 | 51.30% | -0.70% | -4.7% | 5.83% | no |
+| smaller | 0.10% | 15% | 2026 | 4,087 | 53.94% | +1.94% | +14.4% | 2.76% | no |
+| both | 0.10% | 30% | all | identical to "smaller": no year came near either limit | | | | | |
+
+The "wider" rows not shown equal the pinned rows (no halt to lift). Gas,
+which the backtest does not subtract: at $0.30 a bet and a +1.3% pooled
+edge (about +2.5% of stake per bet), a stake has to be near $12 to cover
+gas and $25 or more for gas to be a minor cost -- a bankroll of $10,000+
+at 0.25% or $25,000+ at 0.10% on predict.fun, or a venue without gas.
+The sizing chosen here fixes how far the strategy can fall before it
+stops; it does not fix that.
