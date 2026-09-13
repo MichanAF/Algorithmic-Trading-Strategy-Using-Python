@@ -259,6 +259,29 @@ history it has never seen. Without a minute series a 1m-sourced gate stays in
 warm-up and never votes, which the CLI says out loud rather than betting on
 nothing.
 
+What it measured on the development year ([run 34750893609](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34750893609),
+104,789 graded windows, noise band ±0.0062):
+
+| pre-open share over | corr with next window | at \|z\| ≥ 2.0: signals/day, fade accuracy, z |
+|---|---|---|
+| last 1 min | −0.0099 | 6.3, 51.33%, −0.6 |
+| last 2 min | −0.0150 | 10.6, 51.52%, −0.6 |
+| last 3 min | −0.0171 | 11.9, 51.17%, −1.1 |
+| full 5-minute bar | **−0.0308** | 12.4, **53.93%**, **+2.6** |
+
+The sign is negative in every cell: flow **reverts** over the next window on
+BTC at this horizon, the same direction `mean_reversion` points. And the
+relationship *strengthens* as more of the bar is pooled -- the last minute
+alone is the weakest read, the whole bar the strongest -- which is the
+opposite of the fresh-flow intuition that motivated the minute path. At five
+minutes the taker share is not a signal about the next few seconds of order
+flow; it is a measure of how taker-driven the bar's push was, and a
+taker-driven push is what reverts. The minute path stays as the instrument
+that settled this. Its result argues for `source = "5m"`, and the one cell
+that clears z = +2 (the bar's own share, fade, \|z\| ≥ 2.0) is a
+development-year candidate, not an edge: one of twenty cells, unconfirmed on
+any holdout.
+
 ### Location and structure
 | Gate | Factors |
 |---|---|
