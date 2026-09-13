@@ -253,3 +253,32 @@ def test_minute_candles_are_refused_off_binance_before_any_request(capsys):
                      "--limit", "10", "--source", "api"], capsys)
     assert code == 2
     assert "5m candles only" in out.err
+
+
+def test_the_fade_flow_config_loads_and_pins_its_decisions():
+    """The second pre-registered config: the fade gate untouched, the taker
+    gate at the values chosen on the development year, either gate free to
+    carry a bar, the taker vote flat."""
+    import pytest
+    from btc5m.config import load_config, to_dict
+
+    cfg = load_config("configs/fade-flow-5m.json")
+    fade = load_config("configs/fade-5m.json")
+    assert cfg.gate_stack == ["data_integrity", "mean_reversion", "taker_flow",
+                              "session"]
+    tf = cfg.gates.taker_flow
+    assert (tf.mode, tf.source, tf.window, tf.z_window) == ("fade", "5m", 1, 288)
+    assert (tf.min_abs_z, tf.min_volume_ratio, tf.score_span) == (2.0, 0.0, 0.0)
+    assert cfg.betting.mode == "weighted"
+    assert cfg.betting.allow_dissent is False
+    assert cfg.betting.min_conviction == fade.betting.min_conviction == 0.85
+    assert to_dict(cfg.gates.mean_reversion) == to_dict(fade.gates.mean_reversion)
+    assert to_dict(cfg.gates.session) == to_dict(fade.gates.session)
+    assert to_dict(cfg.risk) == to_dict(fade.risk)
+    assert cfg.break_even_probability() == pytest.approx(0.52)
+    assert "2023-09-13" in cfg_text() and "+1.0%" in cfg_text()
+
+
+def cfg_text() -> str:
+    from pathlib import Path
+    return Path("configs/fade-flow-5m.json").read_text()

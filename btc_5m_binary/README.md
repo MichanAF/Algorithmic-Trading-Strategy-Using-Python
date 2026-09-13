@@ -768,6 +768,28 @@ money.
 `configs/fade-5m.json`. The next edit — a threshold, a second gate, anything —
 needs a fresh holdout cut from history before 2023-09-13.
 
+### The second hypothesis: fade a taker-driven push, pre-registered
+
+`configs/fade-flow-5m.json` adds the order-flow gate beside the fade gate.
+Every value in it was chosen by the person building the strategy, one at a
+time, on the development year, with the evidence and the run each came from
+recorded in `DECISIONS.md`: the taker gate reads the bar's own share and
+fades it (the last 1 to 3 minutes before the open were measured and were
+weaker), at a |z| floor of 2.0 with no volume floor; either gate may carry a
+bar and a disagreement is refused; the taker vote is flat, because a vote
+that climbed with |z| let the 0.85 conviction floor keep only the extreme
+tail, which turned 16 signals a day into 320 bets a year at break-even. On
+the development year the config placed 4,632 bets at 53.53%, +1.53% over
+break-even, significant at two standard errors -- the hypothesis, not the
+evidence, since every value was chosen there.
+
+The fresh holdout is the year ending 2023-09-13, which nothing in this
+repository had read when the config was written. The pass criterion, fixed
+before the fetch: on that year the backtest beats 52.00% by at least +1.0%,
+significant at two standard errors, with no halt.
+`.github/workflows/fade-flow-hypothesis.yml` runs it once. The result goes
+here and in `DECISIONS.md`, whichever way it falls.
+
 ### Conviction now predicts accuracy, which it did not before
 
 The five-gate stack had a **non-monotone** calibration: its most confident
@@ -1203,7 +1225,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            404 tests
+tests/            405 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1213,7 +1235,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 404 passed
+python -m pytest tests/ -q      # 405 passed
 ```
 
 ---
