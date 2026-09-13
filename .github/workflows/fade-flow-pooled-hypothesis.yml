@@ -1,0 +1,208 @@
+# Test the fourth pre-registered hypothesis: the same signal, a bar sized to
+# its effect.
+#
+# configs/fade-flow-pooled-5m.json carries every value of the sized config
+# unchanged.  What changes is the bar: pooled over three fresh years rather
+# than judged on one, because a single year of 5,000 bets has a standard
+# error of 0.7% and a per-year two-sigma bar was underpowered for an edge
+# that looks like +1.2%.  The two earlier fresh years are burned for
+# everything but this pooling; the year ending 2021-09-13 has never been
+# fetched by anything in this repository.
+#
+#   fresh holdout  the year ending 2021-09-13   never fetched before this run
+#   pooled with    the years ending 2022-09-13 and 2023-09-13, each the fresh
+#                  holdout of an earlier pre-registered run
+#   reference      the years ending 2024-09-13 (development), 2025-09-13 and
+#                  2026-09-13 -- outside the bar
+#
+# The pass criterion is inside the config, fixed before the fetch: pooled
+# over the three fresh years, the hit rate beats 52.00% by at least +1.0%
+# and by at least two standard errors of the pooled estimate, and the year
+# ending 2021-09-13 does not halt.  If the config changes after this run
+# has been read, the holdout is burned.
+#
+# No inputs, on purpose.
+
+name: Fade + flow, pooled bar, hypothesis
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/configs/fade-flow-pooled-5m.json'
+      - 'btc_5m_binary/btc5m/**'
+      - '.github/workflows/fade-flow-pooled-hypothesis.yml'
+  workflow_dispatch:
+
+jobs:
+  fade-flow-pooled:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      - name: Fetch the fresh holdout
+        run: |
+          python -m btc5m fetch --year --end 2021-09-13 -o fresh.csv | tee fetch-fresh.log
+
+      - name: Fetch the two earlier fresh years
+        run: |
+          python -m btc5m fetch --year --end 2022-09-13 -o pool2.csv | tee fetch-pool2.log
+          python -m btc5m fetch --year --end 2023-09-13 -o pool3.csv | tee fetch-pool3.log
+
+      - name: Fetch the three reference years
+        run: |
+          python -m btc5m fetch --year --end 2024-09-13 -o dev.csv | tee fetch-dev.log
+          python -m btc5m fetch --year --end 2025-09-13 -o ref2.csv | tee fetch-ref2.log
+          python -m btc5m fetch --year --end 2026-09-13 -o ref3.csv | tee fetch-ref3.log
+
+      # The decision.  The fresh year is run once.
+      - name: Backtest on the fresh holdout
+        run: |
+          python -m btc5m backtest --data fresh.csv \
+            --config configs/fade-flow-pooled-5m.json | tee backtest-fresh.log
+
+      - name: Score every gate on the fresh holdout
+        run: |
+          python -m btc5m gates --data fresh.csv \
+            --config configs/fade-flow-pooled-5m.json | tee gates-fresh.log
+
+      - name: Backtest on the two earlier fresh years, for the pool
+        run: |
+          for y in pool2 pool3; do
+            python -m btc5m backtest --data $y.csv \
+              --config configs/fade-flow-pooled-5m.json | tee backtest-$y.log
+          done
+
+      - name: Backtest on the three reference years
+        run: |
+          for y in dev ref2 ref3; do
+            python -m btc5m backtest --data $y.csv \
+              --config configs/fade-flow-pooled-5m.json | tee backtest-$y.log
+          done
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import math, os, pathlib, re
+
+          def text(log):
+              return pathlib.Path(log).read_text() if os.path.exists(log) else ""
+
+          def field(log, label):
+              m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text(log), re.M)
+              return m.group(1).strip() if m else "—"
+
+          def wins_losses(log):
+              m = re.search(r"wins / losses / void\s+(\d+) / (\d+) / (\d+)", text(log))
+              return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+          def gate_row(log, gate):
+              m = re.search(rf"^\s*{re.escape(gate)}\s+(.*)$", text(log), re.M)
+              return m.group(1).strip() if m else "—"
+
+          BE = 0.52
+          print("## Fade + flow, pooled bar — configs/fade-flow-pooled-5m.json\n")
+          print("Pre-registered pass criterion, pooled over the three fresh years (ending "
+                "2021-09-13, 2022-09-13, 2023-09-13) under this one config: hit rate above "
+                "the 52.00% break-even by at least **+1.0%** and by at least **2 standard "
+                "errors** of the pooled estimate, and the year ending 2021-09-13 does not "
+                "halt. What that asks of the new year: about 52.4% or better.\n")
+
+          pool = {"fresh": wins_losses("backtest-fresh.log"),
+                  "pool2": wins_losses("backtest-pool2.log"),
+                  "pool3": wins_losses("backtest-pool3.log")}
+          halted = "HALTED" in text("backtest-fresh.log")
+          if any(v[0] is None for v in pool.values()):
+              verdict = "NO RESULT — a pooled backtest did not run"
+              pooled = None
+          else:
+              wins = sum(v[0] for v in pool.values())
+              graded = sum(v[0] + v[1] for v in pool.values())
+              p = wins / graded
+              se = math.sqrt(p * (1 - p) / graded)
+              edge = p - BE
+              z = edge / se
+              pooled = (wins, graded, p, se, edge, z)
+              why = []
+              if edge < 0.01:
+                  why.append(f"pooled edge {edge:+.2%} is under +1.0%")
+              if z < 2.0:
+                  why.append(f"pooled z {z:+.2f} is under 2")
+              if halted:
+                  why.append("the fresh year halted")
+              verdict = "PASS" if not why else "FAIL — " + "; ".join(why)
+          print(f"### Verdict: **{verdict}**\n")
+          if pooled:
+              wins, graded, p, se, edge, z = pooled
+              print(f"Pooled: **{wins:,} wins in {graded:,} graded bets, {p:.2%}, "
+                    f"{edge:+.2%} vs 52.00%, standard error {se:.2%}, z {z:+.2f}.**\n")
+
+          for label, log in (("fresh holdout (to 2021-09-13)", "fetch-fresh.log"),
+                             ("pooled: to 2022-09-13", "fetch-pool2.log"),
+                             ("pooled: to 2023-09-13", "fetch-pool3.log"),
+                             ("reference: development", "fetch-dev.log"),
+                             ("reference: to 2025-09-13", "fetch-ref2.log"),
+                             ("reference: to 2026-09-13", "fetch-ref3.log")):
+              lines = text(log).strip().splitlines()
+              print(f"- **{label}**: `{lines[-2] if len(lines) > 1 else 'fetch failed'}`")
+
+          print("\n### Backtest, one config, six years\n")
+          rows = ["bets placed", "hit rate", "edge vs break-even", "max drawdown",
+                  "longest loss streak", "annualised Sharpe", "HALTED"]
+          cols = [("**fresh**", "backtest-fresh.log"), ("pool: 2022", "backtest-pool2.log"),
+                  ("pool: 2023", "backtest-pool3.log"), ("ref: dev", "backtest-dev.log"),
+                  ("ref: 2025", "backtest-ref2.log"), ("ref: 2026", "backtest-ref3.log")]
+          print("| | " + " | ".join(c for c, _ in cols) + " |")
+          print("|---|" + "---|" * len(cols))
+          for label in rows:
+              cells = [field(log, label) for _, log in cols]
+              cells[0] = f"**{cells[0]}**"
+              print(f"| {label} | " + " | ".join(cells) + " |")
+
+          print("\n### Gate votes on the fresh holdout, signal level\n")
+          print("| gate | signals | per day | accuracy | vs b/e | z | verdict |")
+          print("|---|---|---|---|---|---|---|")
+          for gate in ("taker_flow", "mean_reversion"):
+              cells = gate_row("gates-fresh.log", gate).split()
+              if len(cells) >= 5:
+                  print(f"| {gate} | {cells[0]} | {cells[1]} | {cells[2]} | "
+                        f"{cells[3]} | {cells[4]} | {' '.join(cells[5:])} |")
+              else:
+                  print(f"| {gate} | — | | | | | |")
+
+          print("\n**Read the verdict and the pooled line.** The two earlier fresh years "
+                "were already known when this bar was written, and the config's notes "
+                "say what that means: a worthless signal would still pass about one time "
+                "in four, a +1.2% edge about seven times in eight. The reference years "
+                "are outside the bar. The backtest subtracts no gas.")
+          PY
+
+      - name: Keep the candles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-5m-six-years
+          path: |
+            btc_5m_binary/fresh.csv
+            btc_5m_binary/pool2.csv
+            btc_5m_binary/pool3.csv
+            btc_5m_binary/dev.csv
+            btc_5m_binary/ref2.csv
+            btc_5m_binary/ref3.csv
+          if-no-files-found: warn
+          retention-days: 30

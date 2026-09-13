@@ -298,3 +298,17 @@ def test_the_sized_config_differs_from_the_fade_flow_config_in_one_value():
 def cfg_text(path: str = "configs/fade-flow-5m.json") -> str:
     from pathlib import Path
     return Path(path).read_text()
+
+
+def test_the_pooled_config_equals_the_sized_config_in_every_value():
+    """The fourth pre-registered config changes the bar, not the strategy."""
+    from btc5m.config import load_config, to_dict
+
+    pooled = to_dict(load_config("configs/fade-flow-pooled-5m.json"))
+    sized = to_dict(load_config("configs/fade-flow-sized-5m.json"))
+    pooled["name"] = sized["name"]
+    assert pooled == sized
+    text = cfg_text("configs/fade-flow-pooled-5m.json")
+    for needle in ("2021-09-13", "2022-09-13", "2023-09-13", "+1.0%",
+                   "2 standard errors", "does not halt", "one time in four"):
+        assert needle in text, needle

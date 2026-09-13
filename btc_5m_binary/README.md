@@ -848,6 +848,20 @@ that was noticed after the result and therefore cannot rescue this run.
 Three pre-registered tests so far: one pass, two fails on a single clause
 each. The config is not edited; the account is in `DECISIONS.md`.
 
+### The fourth hypothesis: the same signal, a bar sized to its effect
+
+`configs/fade-flow-pooled-5m.json` changes no value. It changes the bar:
+pooled over three fresh years under one config -- the year ending 2021-09-13,
+never fetched, and the years ending 2022-09-13 and 2023-09-13, each the fresh
+holdout of an earlier run -- the hit rate must beat 52.00% by at least +1.0%
+and by two standard errors of the pooled estimate, and the new year must not
+halt. Written before the fetch, and with its own weakness written beside it:
+given the two years already known, the new year must come in at about 52.4%
+or better; a worthless signal would still pass about one time in four, a
++1.2% edge about seven times in eight.
+`.github/workflows/fade-flow-pooled-hypothesis.yml` runs it once. The result
+goes here and in `DECISIONS.md`, whichever way it falls.
+
 ### Conviction now predicts accuracy, which it did not before
 
 The five-gate stack had a **non-monotone** calibration: its most confident
@@ -1283,7 +1297,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            406 tests
+tests/            407 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1293,7 +1307,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 406 passed
+python -m pytest tests/ -q      # 407 passed
 ```
 
 ---

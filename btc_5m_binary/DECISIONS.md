@@ -206,3 +206,34 @@ stops; it does not fix that.
   (the one ending 2021-09-13) is fetched.
 
   This file and `configs/fade-flow-sized-5m.json` are not edited.
+
+## Decision 9: the bar -- pooled over three fresh years
+
+- **Chosen** (option 2 of stop / pool / watch quotes): no value of the
+  strategy changes. The bar is pooled over three fresh years under one
+  config: the year ending 2021-09-13, never fetched, and the years ending
+  2022-09-13 and 2023-09-13, each the fresh holdout of an earlier run and
+  burned for everything but this pooling.
+- **Why.** A single year of 5,000 bets has a standard error of 0.7%; a
+  per-year two-sigma bar needs +1.4% and a true +1.2% edge clears it less
+  than half the time. Two of three pre-registered runs failed on exactly
+  that kind of clause while pooling to +1.71% at 3.4 standard errors.
+- **What the bar asks, written before the fetch.** Given the two years
+  already known (53.71% on 9,962 bets), the new year must come in at about
+  52.4% or better. If the signal were worthless the bar would still pass
+  about one time in four on the strength of the earlier years; if the edge
+  is +1.2% it passes about seven times in eight. Both numbers are in the
+  config so the result is read with them.
+
+## The fourth pre-registered run
+
+- **Config:** `configs/fade-flow-pooled-5m.json`, every value byte-for-byte
+  the sized config's, written 2026-09-13 before any fetch of the year
+  ending 2021-09-13.
+- **Pass criterion, fixed before the fetch:** pooled over the three fresh
+  years, (a) hit rate above 52.00% by at least +1.0%, (b) by at least 2
+  standard errors of the pooled estimate, (c) the year ending 2021-09-13
+  does not halt. Anything less fails.
+- **Reference, outside the bar:** the years ending 2024-09-13, 2025-09-13
+  and 2026-09-13.
+- **Result:** pending the first run of `fade-flow-pooled-hypothesis.yml`.
