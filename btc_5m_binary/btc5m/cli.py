@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .attribution import compare_stacks, gate_edge, render_table
@@ -392,6 +393,19 @@ def cmd_live(args) -> int:
     return 0
 
 
+def _parse_end(text: str) -> datetime:
+    """A --end date, read as midnight UTC on that day.
+
+    The series then ends on the last bar closing at or before that instant, so
+    two fetches with --end one year apart are contiguous and never overlap.
+    """
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise SystemExit(f"error: --end must be YYYY-MM-DD, got {text!r}") from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def cmd_fetch(args) -> int:
     # Three paths, and the default picks between them because the right one is
     # not obvious: Binance's public archives are unmetered, 12 files for a year
@@ -402,6 +416,16 @@ def cmd_fetch(args) -> int:
     if source == "auto":
         source = "dump" if (args.exchange == "binance"
                             and args.limit > 1000) else "api"
+
+    # --end exists so a development set and a holdout can be cut from history
+    # that nobody has looked at yet.  A backtest on the one year already
+    # examined cannot validate anything derived from examining it.
+    end = _parse_end(args.end) if args.end else None
+    if end is not None and source == "api" and args.limit <= 1000:
+        print("error: --end needs a paged fetch; the single-request path "
+              "always returns the most recent bars. Raise --limit above 1000.",
+              file=sys.stderr)
+        return 2
 
     if source == "dump":
         if args.exchange != "binance":
@@ -415,7 +439,7 @@ def cmd_fetch(args) -> int:
                   end="", flush=True)
 
         series = fetch_binance_dump(args.symbol or "BTCUSDT", args.limit,
-                                    pause_seconds=args.pause,
+                                    pause_seconds=args.pause, now=end,
                                     progress=show_dump)
         print()
     elif args.limit > 1000:
@@ -423,7 +447,8 @@ def cmd_fetch(args) -> int:
             print(f"\r  {held:,} / {wanted:,} bars", end="", flush=True)
 
         series = fetch_history(args.exchange, args.symbol, args.limit,
-                               pause_seconds=args.pause, progress=show)
+                               pause_seconds=args.pause, progress=show,
+                               end_ts=int(end.timestamp()) if end else None)
         print()
     else:
         series = fetch_klines(args.exchange, args.symbol, args.limit)
@@ -579,6 +604,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="dump = data.binance.vision archives (unmetered, not "
                         "geo-blocked); api = the REST endpoint. auto picks dump "
                         "for binance above 1000 bars")
+    p.add_argument("--end", metavar="YYYY-MM-DD",
+                   help="end the series at midnight UTC on this date instead "
+                        "of now, to cut a development set and a holdout from "
+                        "history nobody has examined yet")
     p.add_argument("-o", "--out", default="btc_5m.csv")
     p.set_defaults(func=cmd_fetch)
 

@@ -406,6 +406,39 @@ def test_a_year_needs_about_a_dozen_monthly_archives():
     assert months == sorted(months)
 
 
+def test_a_past_end_date_cuts_a_window_that_ends_there():
+    """A development set and a holdout have to come from history nobody has
+    examined, so the archive list must stop at the requested date and never
+    reach into the months after it."""
+    end = datetime(2024, 9, 13, tzinfo=timezone.utc)
+    months, days = data._dump_periods(105_120, end)
+    assert months[-1] == "2024-08"                    # nothing at or after Sep
+    assert all(m < "2024-09" for m in months)
+    assert days == [f"2024-09-{d:02d}" for d in range(1, 13)]
+    assert "2024-09-13" not in days                    # the end day is excluded
+
+
+def test_two_end_dates_a_year_apart_are_contiguous_and_disjoint(monkeypatch):
+    """The whole protocol rests on dev, holdout and the seen year not sharing a
+    bar.  Serve one archive spanning the boundary and cut it both ways."""
+    boundary = int(datetime(2024, 9, 13, tzinfo=timezone.utc).timestamp())
+    opened = boundary - 300 * 5                        # five bars before...
+    rows = [(opened + i * 300, "100.5") for i in range(10)]   # ...to five after
+    served = _zip_klines(rows)
+
+    def fake(request, timeout=None):
+        return _Response_bytes(served)
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    earlier = data.fetch_binance_dump(
+        bars=5, now=datetime(2024, 9, 13, tzinfo=timezone.utc))
+    later = data.fetch_binance_dump(
+        bars=5, now=datetime(2025, 9, 13, tzinfo=timezone.utc))
+    assert earlier.ts[-1] == boundary                  # ends ON the boundary
+    assert later.ts[-1] == boundary + 300 * 5
+    assert set(earlier.ts).isdisjoint(set(later.ts))
+
+
 def test_the_dump_fetch_stitches_archives_into_one_series(monkeypatch):
     opened = 1_757_675_400
     served = {}

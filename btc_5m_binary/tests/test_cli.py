@@ -21,6 +21,65 @@ def test_every_preset_is_a_valid_config():
         assert cfg.gate_stack == stack, name
 
 
+def test_end_date_is_midnight_utc_on_that_day():
+    from datetime import datetime, timezone
+    from btc5m.cli import _parse_end
+
+    assert _parse_end("2024-09-13") == datetime(2024, 9, 13, tzinfo=timezone.utc)
+    with pytest.raises(SystemExit, match="YYYY-MM-DD"):
+        _parse_end("13/09/2024")
+
+
+def test_end_date_is_refused_on_the_single_request_path(capsys):
+    """The one-shot REST call always returns the most recent bars, so --end
+    would be silently ignored there.  Refuse rather than mislead."""
+    code, out = run(["fetch", "--end", "2024-09-13", "--source", "api"], capsys)
+    assert code == 2
+    assert "--limit above 1000" in out.err
+
+
+def test_end_date_reaches_the_archive_fetch(monkeypatch, tmp_path, capsys):
+    """--year --end routes to the archives with the date as the series end."""
+    from datetime import datetime, timezone
+    import btc5m.cli as cli
+    from btc5m.data import synthetic
+
+    seen = {}
+
+    def fake_dump(symbol, bars, pause_seconds=0.0, now=None, progress=None):
+        seen.update(symbol=symbol, bars=bars, now=now)
+        return synthetic(400, seed=1)
+
+    monkeypatch.setattr(cli, "fetch_binance_dump", fake_dump)
+    out_path = tmp_path / "dev.csv"
+    code, out = run(["fetch", "--year", "--end", "2024-09-13",
+                     "-o", str(out_path)], capsys)
+    assert code == 0
+    assert seen["now"] == datetime(2024, 9, 13, tzinfo=timezone.utc)
+    assert seen["bars"] == 105_120
+    assert out_path.exists()
+
+
+def test_the_fade_config_loads_and_pins_its_hypothesis():
+    """The hypothesis under test must not drift with library defaults."""
+    from btc5m.config import load_config
+
+    cfg = load_config("configs/fade-5m.json")
+    cfg.validate()
+    assert cfg.gate_stack == ["data_integrity", "mean_reversion", "session"]
+    assert cfg.betting.min_directional_gates == 1
+    # session is the validator's third gate, not a filter: every hour open,
+    # weekends open, so it cannot quietly become part of the hypothesis.
+    assert cfg.gates.session.allowed_hours_utc == list(range(24))
+    assert cfg.gates.session.skip_weekend is False
+    # Pinned explicitly, so a defaults change cannot alter the test.
+    assert cfg.gates.mean_reversion.min_abs_z == pytest.approx(1.8)
+    assert cfg.gates.mean_reversion.max_variance_ratio == pytest.approx(1.0)
+    # Same venue economics as the strategy it replaces, so the comparison is fair.
+    assert cfg.venue == "predict-fun-btc-5m"
+    assert cfg.break_even_probability() == pytest.approx(0.52)
+
+
 def test_menu_lists_every_gate_and_preset(capsys):
     code, out = run(["menu"], capsys)
     assert code == 0

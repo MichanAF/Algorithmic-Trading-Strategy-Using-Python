@@ -600,6 +600,52 @@ bps, the window derivation), the data pipeline, the risk layer that halted both
 runs as designed, and a measurement rig that rejected the idea before it cost
 anything.
 
+### The fade hypothesis: protocol fixed before the data was seen
+
+One hypothesis follows from the evidence, and it is tested here the only way a
+backtest can be trusted — on history nobody has examined, with the pass
+criterion written down first.
+
+**The hypothesis.** Fade, do not follow. Every trend-following gate measured
+significantly below break-even on real BTC; `mean_reversion` was the only gate
+with a positive sign (+1.46%, z = +1.1, *not* established); and the lag-1
+autocorrelation of real 5-minute returns is ≈ −0.03, which points the same way.
+`configs/fade-5m.json` is that hypothesis and nothing else: `mean_reversion` as
+the sole direction vote, `data_integrity` as the precondition, and the predict.fun
+betting and risk settings unchanged so the comparison with the failed stack is
+fair. Its parameters are pinned in the file so a change to library defaults
+cannot alter the test.
+
+The stack carries a third gate, `session`, because the validator requires three.
+It was chosen before any data was seen for two structural reasons: it is a veto
+with no direction vote, and it reads only the clock, so it shares no feature with
+`mean_reversion`. Pinned to its defaults — every hour and every weekday open,
+only a ±5-minute blackout around the 00/08/16 UTC funding marks, about 2% of
+bars. If it turns out to matter, that is a finding to report, not a knob.
+
+**The data.** Three contiguous years from Binance's archives, cut with
+`fetch --end`, which ends a series at midnight UTC on a date so consecutive
+windows never share a bar:
+
+| Window | Year ending | Role | Examined before this? |
+|---|---|---|---|
+| development | 2024-09-13 | where the idea is allowed to look good | no |
+| **holdout** | **2025-09-13** | **where it has to** | **no — touched once** |
+| contaminated | 2026-09-13 | third confirmation, lower trust | yes — its gate scores were read while choosing the hypothesis |
+
+**The pass criterion, pre-registered on 2026-09-13**, on the holdout only:
+`mean_reversion` edge vs the 52.00% break-even above **+1.0%**, with **z ≥ +2**
+in the gate table, *and* the backtest does not halt. Anything less and the
+hypothesis fails — and the work stops, rather than moving on to the next idea
+against the same year.
+
+**The rule.** `configs/fade-5m.json` is not edited after a holdout result has
+been read. Doing so burns the holdout: the next test needs a fresh one cut from
+earlier history. The `Fade hypothesis` workflow takes no inputs for the same
+reason — a parameter sweep here would be the original error again.
+
+Results are recorded in this section when the workflow has run.
+
 ### Conviction now predicts accuracy, which it did not before
 
 The five-gate stack had a **non-monotone** calibration: its most confident
