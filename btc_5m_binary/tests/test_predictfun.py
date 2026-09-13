@@ -396,6 +396,22 @@ def test_probe_shows_a_parsed_market_when_the_shape_matches():
     assert "PYTH BTC_USD" in text     # the feed, which is per market
 
 
+def test_probe_counts_the_window_lengths_it_saw():
+    """5- and 15-minute BTC windows are listed side by side, so a live run needs
+    to see whether the 300-second ones came back at all."""
+    from btc5m.predictfun import probe
+
+    client = PredictFunClient(testnet=True)
+    client.find_variant = lambda: CRYPTO_UP_DOWN
+    client._get_markets = lambda **kw: {"success": True, "data": [
+        payload(id="a"),
+        payload(id="b", categorySlug=slug_for(15)),
+        payload(id="c", tradingStatus="CLOSED")]}
+    text = probe(client, limit=3)
+    assert "5min x2" in text and "15min x1" in text
+    assert "five-minute BTC markets: 2 (1 open)" in text
+
+
 def test_market_flags_the_order_builder_needs_are_captured():
     """isNegRisk and isYieldBearing come from GET /markets and gate approvals."""
     m = PredictMarket.from_payload(payload(isNegRisk=True, isYieldBearing=True))

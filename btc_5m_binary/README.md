@@ -797,14 +797,20 @@ the hot path of a 45-second entry window. The slug and `createdAt` are both UTC
 and both exact. `_window()` still prefers explicit `startsAt`/`endsAt` if a
 market kind ever publishes them.
 
-#### One thing is still open
+#### Both window lengths exist, so the filter matters
 
-The sampled market was **15 minutes**, not 5. Its slug says `-15-minutes` and its
-window measured 900 seconds. Whether predict.fun lists 5-minute BTC windows at
-all is unconfirmed — `btc5m probe` against mainnet answers it, and
-`btc_five_minute_markets()` already filters on `window_seconds == 300`, so it
-returns nothing rather than quietly betting a 15-minute window on a 5-minute
-signal.
+The market that confirmed this shape was a **15-minute** one — slug `-15-minutes`,
+window 900 seconds. predict.fun lists **5-minute** BTC windows too, which is what
+the Trust Wallet app shows ("Bitcoin Up or Down — 8:15AM-8:20AM ET") and what
+this strategy is built for. A 5-minute market's slug reads `-5-minutes` and
+derives a 300-second window by the same arithmetic.
+
+That both lengths are listed side by side is the reason
+`btc_five_minute_markets()` filters on `window_seconds == 300` rather than on the
+title. The two look nearly identical in a listing, and a 5-minute signal on a
+15-minute window is a different bet at the same price: three times the horizon,
+so the edge the gates measured over one bar is diluted across three. An unfiltered
+`markets()` call will hand you both.
 
 ### What is not built: signing and sending
 
@@ -903,7 +909,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            325 tests
+tests/            326 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -913,7 +919,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 325 passed
+python -m pytest tests/ -q      # 326 passed
 ```
 
 ---

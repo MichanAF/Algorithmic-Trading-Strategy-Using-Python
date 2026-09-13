@@ -533,6 +533,22 @@ def probe(client: PredictFunClient, limit: int = 3) -> str:
                          f"{json.dumps(vd)[:300] if vd else 'null'}")
             lines.append("  -> a crypto window comes from the slug duration plus "
                          "createdAt; add explicit keys to predictfun._FIELDS")
+    # predict.fun lists 5- and 15-minute BTC windows side by side, and only the
+    # 300-second ones are this strategy's bet.  Summarise what came back so a
+    # live run can confirm the 5-minute markets are visible at all before
+    # wondering why btc_five_minute_markets() returned nothing.
+    parsed = [PredictMarket.from_payload(raw) for raw in items]
+    durations: dict[str, int] = {}
+    for market in parsed:
+        seconds = market.window_seconds
+        key = f"{seconds // 60}min" if seconds else "unknown"
+        durations[key] = durations.get(key, 0) + 1
+    lines.append(f"\nwindow lengths in this page: "
+                 f"{', '.join(f'{k} x{v}' for k, v in sorted(durations.items()))}")
+    btc5m = [m for m in parsed if m.is_five_minute() and _looks_like_btc(m.title)]
+    lines.append(f"five-minute BTC markets: {len(btc5m)} "
+                 f"({sum(1 for m in btc5m if m.is_open)} open)")
+
     lines.append("\nRaw first market:")
     lines.append(json.dumps(items[0], indent=2)[:2500])
     return "\n".join(lines)
