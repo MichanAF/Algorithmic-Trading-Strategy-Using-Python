@@ -505,3 +505,22 @@ def test_taker_flow_window_dilutes_a_single_bar_spike():
     smoothed = _flow_gate_at(_flow_series(spike_share=0.95), 399, window=6)
     assert "share 0.95" in raw.note
     assert "share 0.57" in smoothed.note or "share 0.58" in smoothed.note
+
+
+def test_a_zero_score_span_makes_a_pass_a_full_vote():
+    """The betting layer bets on conviction, so a vote that climbs from 0 at
+    the floor means only the most extreme imbalances ever become bets.  A
+    span of 0 says yes or no and nothing in between."""
+    series = _flow_series(spike_share=0.95)
+    sloped = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=2.0)
+    flat = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=0.0)
+    assert sloped.passed and flat.passed
+    assert sloped.direction == flat.direction == DOWN
+    assert flat.score == 1.0
+    assert 0.0 < sloped.score < 1.0                   # the same |z|, scored by span
+    # A bar that does not clear the floor scores 0 either way.
+    quiet = _flow_series(spike_share=0.51)
+    assert not _flow_gate_at(quiet, 399, mode="fade", score_span=0.0).passed
+    assert _flow_gate_at(quiet, 399, mode="fade", score_span=0.0).score == 0.0
+    with pytest.raises(ValueError, match="score_span"):
+        config_from_dict({"gates": {"taker_flow": {"score_span": -1.0}}})

@@ -169,6 +169,13 @@ class TakerFlowParams:
     z_window: int = 288                # lookback for the z-score of the ratio; 288 = one day
     min_abs_z: float = 1.5             # how far from typical the imbalance must be
     min_volume_ratio: float = 1.0      # ignore imbalance on volume below this x median
+    # How the vote is scored once it passes.  The score rises from 0 at
+    # min_abs_z to 1 at min_abs_z + score_span, and the betting layer only
+    # bets when the stack's conviction clears its floor -- so a wide span
+    # means only the most extreme imbalances ever become bets.  0 makes a pass
+    # a full vote: the gate says yes or no and nothing in between, which is
+    # the honest map when accuracy does not keep rising with |z|.
+    score_span: float = 2.0
 
 
 @dataclass
@@ -344,6 +351,8 @@ class StrategyConfig:
             raise ValueError("taker_flow.window must be >= 1")
         if tf.z_window < 2:
             raise ValueError("taker_flow.z_window must be >= 2")
+        if tf.score_span < 0:
+            raise ValueError("taker_flow.score_span must be >= 0 (0 = a flat vote)")
         if not 0.0 < self.risk.max_stake_pct <= 1.0:
             raise ValueError("max_stake_pct must be in (0, 1]")
         if self.risk.kelly_fraction <= 0.0:

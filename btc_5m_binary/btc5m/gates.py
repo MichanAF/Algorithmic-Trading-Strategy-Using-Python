@@ -659,7 +659,7 @@ class TakerFlowGate(Gate):
                   f"volume {vol_ratio:.2f}x median >= {p.min_volume_ratio}"),
         ]
         ok = all(c.passed for c in checks)
-        score = _saturate(abs(z), p.min_abs_z, p.min_abs_z + 2.0)
+        score = _saturate(abs(z), p.min_abs_z, p.min_abs_z + p.score_span)
         return self._result(ok, direction if ok else FLAT, score if ok else 0.0,
                             checks, note=f"share {ratio:.3f}, z {z:+.2f}")
 

@@ -84,15 +84,22 @@ jobs:
               --set gates.taker_flow.min_abs_z=$2 \
               --set gates.taker_flow.min_volume_ratio=$3 \
               | sed -n '/^3b\./,/^4\./p' | sed '$d'
-            for mode in unanimous weighted; do
-              echo "-- candidate $1, betting.mode $mode --"
+            # Three ways to turn the wiring into bets: unanimous (AND), weighted
+            # (OR) with the vote scored by how far past the floor |z| sits, and
+            # weighted with a flat vote (score_span 0), where a pass is a full
+            # vote and the conviction floor no longer selects only the most
+            # extreme imbalances.
+            for variant in "unanimous 2.0" "weighted 2.0" "weighted 0"; do
+              set -- $cand $variant
+              echo "-- candidate $1, betting.mode $4, taker_flow.score_span $5 --"
               python -m btc5m backtest --data dev.csv --config configs/fade-5m.json \
                 --gates data_integrity,mean_reversion,taker_flow,session \
                 --set gates.taker_flow.mode=fade \
                 --set gates.taker_flow.min_abs_z=$2 \
                 --set gates.taker_flow.min_volume_ratio=$3 \
-                --set betting.mode=$mode \
-                | grep -E "bets placed|hit rate|edge vs|max drawdown|HALTED|Sharpe"
+                --set gates.taker_flow.score_span=$5 \
+                --set betting.mode=$4 \
+                | grep -E "bets placed|hit rate|edge vs|max drawdown|HALTED|Sharpe|longest loss"
             done
           done 2>&1 | tee combine-dev.log
 

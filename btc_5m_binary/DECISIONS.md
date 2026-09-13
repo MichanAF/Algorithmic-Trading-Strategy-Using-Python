@@ -72,9 +72,37 @@ the fade config) or from the year ending 2023-09-13.
    top of twenty before; the best cell's z is inflated by that selection,
    which is what the fresh holdout exists to correct.
 5. `z_window` -- 288 bars (one day) unless there is a reason to change it.
-6. How A and B combine: both must agree, or either may fire; and
-   `min_directional_gates`.
+6. How A and B combine. In unanimous mode every directional gate must
+   pass, so a bar is tradable only when both fire and agree (AND); in
+   weighted mode a silent gate casts no vote, so either gate alone can carry
+   a bar and a disagreement is refused (OR). Measured for both taker
+   candidates still open (run 34753309339, development year), signal level
+   first, then as bets under the fade config's own betting and risk values:
+
+   | candidate | cell | signals/day | accuracy | vs 52.00% | z |
+   |---|---|---|---|---|---|
+   | A (\|z\| 1.0, vol 2x) | mean_reversion alone | 2.71 | 54.35% | +2.35% | +1.5 |
+   | A | taker_flow alone | 13.79 | 53.81% | +1.81% | +2.6 |
+   | A | both fire, agree | 1.02 | 56.57% | +4.57% | +1.8 |
+   | A | AND | 1.02 | 56.57% | +4.57% | +1.8 |
+   | A | OR | 17.53 | 54.05% | +2.05% | +3.3 |
+   | C (\|z\| 2.0, none) | mean_reversion alone | 3.71 | 54.86% | +2.86% | +2.1 |
+   | C | taker_flow alone | 12.38 | 53.95% | +1.95% | +2.6 |
+   | C | both fire, agree | 0.08 | 51.72% | -0.28% | 0.0 |
+   | C | AND | 0.08 | too few | | |
+   | C | OR | 16.16 | 54.15% | +2.15% | +3.3 |
+
+   Bets, same run, fade config betting and risk: A unanimous 2 bets a year;
+   A weighted 290 bets, 50.87%, -1.13%; C unanimous 0 bets; C weighted 320
+   bets, 52.19%, +0.19%. The fade config alone on this year: 325 bets,
+   52.31%. So AND cannot produce a bet stream, and OR as scored today turns
+   16-17 signals a day into under one bet a day at break-even: the vote's
+   score rises with |z| past the floor, the conviction floor of 0.85 then
+   admits only the most extreme imbalances, and the grid in item 4 shows
+   those are not the better ones. A flat vote (`score_span` 0: a pass is a
+   full vote) is the candidate fix, measured next.
 7. The betting floor, `min_conviction`, which sets how far above `min_abs_z`
-   a signal must be before it is a bet.
+   a signal must be before it is a bet, and with it how the taker vote is
+   scored (`score_span`).
 
 Then: the config file, the workflow with the fresh holdout, one run.
