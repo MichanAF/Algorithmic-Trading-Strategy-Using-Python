@@ -567,9 +567,14 @@ quote, profit per bet:
 | $100 | +12.26 | +8.75 | +12.56 |
 
 **Below about an $8 stake Polymarket's fee beats BNB gas; above it predict.fun
-wins.** Polymarket as a maker beats both at every size. All of this assumes
-predict.fun charges no trading fee, which is the one number I could not verify —
-measure a real fill and set `fee_bps`.
+wins.** Polymarket as a maker beats both at every size.
+
+**That table assumes predict.fun charges no trading fee, and it does.** A live
+testnet response carries `feeRateBps: 200` — 2% — so the comparison above is
+optimistic for predict.fun and should not be relied on until two things are
+known: what the rate is on a crypto up/down market (the one sampled was a
+`DEFAULT` market) and what the 200 bps is charged *on*. Set `fee_bps` from a
+real fill before trusting any of it.
 
 ### Bankroll, because 3 gates fire often
 
@@ -708,6 +713,42 @@ provider.pollingInterval = 300;   // BNB is fast enough to justify it
 Set it on whatever provider you pass in, browser wallets included. Combined with
 predict.fun's Tokyo servers this is the difference between comfortably inside
 the window and missing it.
+
+### The API shape, confirmed
+
+Field names come from a live testnet response, not from guessing:
+
+| | |
+|---|---|
+| Envelope | `{success, data, cursor}` |
+| Market id | `id`, an integer, plus `conditionId` |
+| Title | `question` (`title` is a short label) |
+| Live filter | `tradingStatus == "OPEN"` |
+| Order flags | `isNegRisk`, `isYieldBearing` |
+| Fee | `feeRateBps` — 200 on the market sampled |
+| Outcome token | `onChainId` |
+| Prices | `bestBid` / `bestAsk`, each `{price, size}` |
+
+**Prices are a book, not a number.** You pay the **ask**, so that is what the
+strategy prices against; the mid is the fairer read of what the market believes
+and is what the skew veto uses. Pricing the edge against the mid would overstate
+it by half the spread on every bet.
+
+`status` is not sent: it is a server-side enum and `ACTIVE` is not one of its
+values, which testnet answers with a 400. Observed so far: `REGISTERED` for
+`status`, `OPEN` for `tradingStatus`.
+
+**Two things are still open**, both because the sampled market was a `DEFAULT`
+one rather than a crypto up/down:
+
+- The `marketVariant` enum value for crypto markets. `DEFAULT` is confirmed.
+  `VariantData_CryptoUpDown` names the *shape* of `variantData`, not the enum
+  value, so it is a poor guess; `find_variant()` tries the plausible spellings.
+- Where the five-minute window start and end live. Absent at the top level, and
+  `variantData` was null on a `DEFAULT` market, so almost certainly inside it.
+  Both levels are searched.
+
+One `btc5m probe` run against a crypto market closes both.
 
 ### What is not built: signing and sending
 
