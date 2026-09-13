@@ -254,8 +254,15 @@ class PredictFunClient:
     # ------------------------------------------------------------------ #
 
     def markets(self, variant: str | None = CRYPTO_UP_DOWN,
-                status: str | None = "ACTIVE", first: int = 50,
+                status: str | None = None, first: int = 50,
                 after: str | None = None) -> list[PredictMarket]:
+        """List markets.
+
+        ``status`` defaults to None on purpose: it is a server-side enum and
+        "ACTIVE" is not one of its values -- testnet rejects that with a 400
+        naming MarketStatusFilter. Omit it and filter locally until the valid
+        values are confirmed.
+        """
         payload = self._get_markets(marketVariant=variant, status=status,
                                     first=first, after=after)
         return [PredictMarket.from_payload(item) for item in self._items(payload)]
@@ -305,14 +312,16 @@ def probe(client: PredictFunClient, limit: int = 3) -> str:
     """
     lines = [f"base url   {client.base_url}",
              f"api key    {'set' if client.api_key else 'none (testnet)'}", ""]
-    payload = client._get("/v1/markets", marketVariant=CRYPTO_UP_DOWN,
-                          status="ACTIVE", first=limit)
+    payload = client._get_markets(marketVariant=CRYPTO_UP_DOWN, first=limit)
     items = client._items(payload)
+    # Responses are wrapped: {"success": bool, "data": ..., "code"/"error"/
+    # "message"/"trace" on failure}.
     lines.append(f"envelope keys: {sorted(payload) if isinstance(payload, dict) else 'list'}")
     lines.append(f"markets returned: {len(items)}")
     if not items:
         lines.append("\nNo markets came back. Try dropping the marketVariant "
-                     "filter, or check the status value.")
+                     "filter -- it is a server-side enum and the spelling may "
+                     "differ from VariantData_CryptoUpDown.")
         return "\n".join(lines)
 
     lines.append(f"\nkeys on a market: {sorted(items[0])}")

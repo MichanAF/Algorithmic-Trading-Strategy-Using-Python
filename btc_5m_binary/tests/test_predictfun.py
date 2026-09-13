@@ -237,3 +237,23 @@ def test_a_non_404_error_is_not_retried_against_the_other_path():
     with pytest.raises(PredictFunError, match="rate limited"):
         client.markets()
     assert tried == ["/v1/markets"]
+
+
+def test_status_is_not_sent_by_default():
+    """The server rejects status=ACTIVE with a 400 naming MarketStatusFilter."""
+    client = PredictFunClient(testnet=True)
+    seen = {}
+
+    def fake_get(path, **params):
+        seen.update(params)
+        return {"success": True, "data": [payload()]}
+
+    client._get = fake_get
+    client.markets()
+    assert seen.get("status") is None
+    assert seen["marketVariant"] == CRYPTO_UP_DOWN
+
+
+def test_the_success_envelope_is_unwrapped():
+    envelope = {"success": True, "data": [payload()]}
+    assert len(PredictFunClient._items(envelope)) == 1
