@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -67,6 +68,25 @@ class BarSeries:
 
     def time_at(self, i: int) -> datetime:
         return datetime.fromtimestamp(int(self.ts[i]), tz=timezone.utc)
+
+    def gaps(self) -> list[tuple[int, int]]:
+        """Missing stretches as (index of the bar after the gap, bars missing).
+
+        Real exchange history has holes -- maintenance windows, outages, the odd
+        delisted minute -- and they are not filled anywhere in this package.  A
+        gap is a bar whose predecessor is more than one bar behind it, which is
+        exactly what the data_integrity gate vetoes.  Worth printing after a
+        download so a hole is a known fact rather than a surprise in the
+        blocker table.
+        """
+        if len(self) < 2:
+            return []
+        steps = np.diff(self.ts)
+        missing = np.nonzero(steps > BAR_SECONDS)[0]
+        return [(int(i) + 1, int(steps[i] // BAR_SECONDS) - 1) for i in missing]
+
+    def gap_count(self) -> int:
+        return len(self.gaps())
 
     def write_csv(self, path: str | Path) -> Path:
         path = Path(path)
@@ -208,23 +228,7 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
             "use --data instead, or run this from a machine with direct access."
         ) from exc
 
-    if exchange == "binance":
-        rows = [(int(k[6]) // 1000, float(k[1]), float(k[2]), float(k[3]),
-                 float(k[4]), float(k[5])) for k in payload]
-    elif exchange == "coinbase":
-        # [time, low, high, open, close, volume], newest first.
-        rows = [(int(k[0]) + BAR_SECONDS, float(k[3]), float(k[2]), float(k[1]),
-                 float(k[4]), float(k[5])) for k in payload]
-        rows.sort(key=lambda r: r[0])
-    else:
-        result = payload.get("result", {})
-        if payload.get("error"):
-            raise RuntimeError(f"kraken error: {payload['error']}")
-        key = next((k for k in result if k != "last"), None)
-        if key is None:
-            raise RuntimeError(f"kraken returned no OHLC data for {symbol!r}")
-        rows = [(int(k[0]) + BAR_SECONDS, float(k[1]), float(k[2]), float(k[3]),
-                 float(k[4]), float(k[6])) for k in result[key]]
+    rows = _parse_candles(exchange, payload, symbol)
 
     if not rows:
         raise RuntimeError(f"{exchange} returned no candles for {symbol!r}")
@@ -235,6 +239,137 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
         raise RuntimeError(f"{exchange} returned only unclosed candles")
 
     cols = list(zip(*rows))
+    return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
+                     close=cols[4], volume=cols[5], symbol=symbol)
+
+
+def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
+    """One exchange's candle payload as ascending (close_ts, o, h, l, c, v) rows.
+
+    Timestamps are **close** times, which is what the rest of this package means
+    by a bar's ts.  Binance gives it directly; Coinbase and Kraken label a candle
+    by its open, so a bar length is added.
+    """
+    if exchange == "binance":
+        # Derived from openTime, not closeTime.  Binance's closeTime is the last
+        # *millisecond* of the interval (openTime + 299999), so //1000 lands a
+        # second short of the boundary and real bars would carry ...:04:59 where
+        # synthetic and CSV bars carry ...:05:00.  A one-second skew is not
+        # cosmetic here: predict.fun windows sit on exact 300-second grids, and
+        # seconds_into_window is measured against a 45-second entry budget.
+        rows = [(int(k[0]) // 1000 + BAR_SECONDS, float(k[1]), float(k[2]),
+                 float(k[3]), float(k[4]), float(k[5])) for k in payload]
+    elif exchange == "coinbase":
+        # [time, low, high, open, close, volume], newest first.
+        rows = [(int(k[0]) + BAR_SECONDS, float(k[3]), float(k[2]), float(k[1]),
+                 float(k[4]), float(k[5])) for k in payload]
+    else:
+        result = payload.get("result", {})
+        if payload.get("error"):
+            raise RuntimeError(f"kraken error: {payload['error']}")
+        key = next((k for k in result if k != "last"), None)
+        if key is None:
+            raise RuntimeError(f"kraken returned no OHLC data for {symbol!r}")
+        rows = [(int(k[0]) + BAR_SECONDS, float(k[1]), float(k[2]), float(k[3]),
+                 float(k[4]), float(k[6])) for k in result[key]]
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+# How many candles one request returns, and how to ask for an earlier page.
+# Kraken is absent on purpose: its public OHLC endpoint serves only the most
+# recent ~720 candles whatever you pass, so it cannot supply a year.
+_HISTORY_PAGES = {
+    "binance": ("https://api.binance.com/api/v3/klines"
+                "?symbol={symbol}&interval=5m&limit=1000&endTime={end_ms}", 1000),
+    "coinbase": ("https://api.exchange.coinbase.com/products/{symbol}/candles"
+                 "?granularity=300&start={start_iso}&end={end_iso}", 300),
+}
+
+
+def fetch_history(exchange: str = "binance", symbol: str | None = None,
+                  bars: int = 105_120, timeout: int = 20,
+                  pause_seconds: float = 0.25, end_ts: int | None = None,
+                  progress=None) -> BarSeries:
+    """Page backwards through a public endpoint until ``bars`` candles are held.
+
+    ``fetch_klines`` is capped at one request, which is 1000 bars -- about three
+    and a half days.  Every backtest number in the README came off a synthetic
+    generator because of that gap, and a year of real history is the one thing
+    that can tell you whether the edge is real.  A year of 5-minute bars is
+    105,120 of them: 106 requests to Binance, 351 to Coinbase.
+
+    Pages are walked from newest to oldest, deduplicated by close time, and
+    returned ascending.  Paging stops early when the exchange runs out of
+    history, so a symbol younger than ``bars`` yields what exists rather than
+    looping.  Gaps are not filled -- ``load_csv`` and the data_integrity gate
+    are what judge them, and inventing bars to paper over a venue outage is how
+    a backtest starts lying.
+    """
+    exchange = exchange.lower()
+    if exchange == "kraken":
+        raise ValueError(
+            "kraken's public OHLC endpoint returns only the most recent ~720 "
+            "candles, so it cannot supply deep history. Use binance (or "
+            "coinbase, if binance.com is geo-blocked where you are).")
+    if exchange not in _HISTORY_PAGES:
+        raise ValueError(f"no history endpoint for {exchange!r}; "
+                         f"choose from {sorted(_HISTORY_PAGES)}")
+    if bars < 1:
+        raise ValueError(f"bars must be positive, got {bars}")
+
+    symbol = symbol or _DEFAULT_SYMBOLS[exchange]
+    template, page_size = _HISTORY_PAGES[exchange]
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    cursor = end_ts if end_ts is not None else now
+
+    collected: dict[int, tuple] = {}
+    # Generous but finite: enough pages for the request plus slack for gaps,
+    # so a misbehaving endpoint cannot spin forever.
+    for _ in range(bars // page_size + 8):
+        span = page_size * BAR_SECONDS
+        url = template.format(
+            symbol=symbol, end_ms=cursor * 1000,
+            start_iso=datetime.fromtimestamp(cursor - span, tz=timezone.utc).isoformat(),
+            end_iso=datetime.fromtimestamp(cursor, tz=timezone.utc).isoformat())
+        request = urllib.request.Request(url, headers={"User-Agent": "btc5m/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode())
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            if collected:
+                raise RuntimeError(
+                    f"{exchange} stopped responding after {len(collected)} of "
+                    f"{bars} bars ({exc}). Rerun to resume, or pass a smaller "
+                    "--limit.") from exc
+            raise RuntimeError(
+                f"could not reach {exchange} ({exc}). Exchange endpoints are "
+                "often blocked by corporate or sandbox network policy, and "
+                "binance.com is geo-blocked in some countries -- try "
+                "--exchange coinbase, or run this from a machine with direct "
+                "access.") from exc
+
+        rows = _parse_candles(exchange, payload, symbol)
+        fresh = [r for r in rows if r[0] not in collected and r[0] <= now]
+        if not fresh:
+            break                           # no history left before the cursor
+        for row in fresh:
+            collected[row[0]] = row
+        if progress is not None:
+            progress(len(collected), bars)
+        if len(collected) >= bars:
+            break
+        # Step the cursor to just before the oldest bar held, so the next page
+        # cannot repeat this one.
+        cursor = min(collected) - BAR_SECONDS
+        if pause_seconds:
+            time.sleep(pause_seconds)
+
+    if not collected:
+        raise RuntimeError(f"{exchange} returned no closed candles for {symbol!r}")
+
+    ordered = [collected[ts] for ts in sorted(collected)][-bars:]
+    cols = list(zip(*ordered))
     return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
                      close=cols[4], volume=cols[5], symbol=symbol)
 

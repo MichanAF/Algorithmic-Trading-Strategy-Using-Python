@@ -24,7 +24,8 @@ from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
-from .data import BarSeries, fetch_klines, load_csv, synthetic
+from .data import (BarSeries, fetch_history, fetch_klines, load_csv,
+                   synthetic)
 from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .features import build_features
@@ -392,11 +393,32 @@ def cmd_live(args) -> int:
 
 
 def cmd_fetch(args) -> int:
-    series = fetch_klines(args.exchange, args.symbol, args.limit)
+    # One request caps at 1000 bars, about three and a half days.  Anything
+    # longer has to be paged, and a real backtest needs a year (105,120 bars).
+    if args.limit > 1000:
+        def show(held: int, wanted: int) -> None:
+            print(f"\r  {held:,} / {wanted:,} bars", end="", flush=True)
+
+        series = fetch_history(args.exchange, args.symbol, args.limit,
+                               pause_seconds=args.pause, progress=show)
+        print()
+        if len(series) < args.limit:
+            print(f"note: {args.exchange} had {len(series):,} bars, not the "
+                  f"{args.limit:,} asked for -- that is its whole history for "
+                  f"{series.symbol}.")
+    else:
+        series = fetch_klines(args.exchange, args.symbol, args.limit)
+
     path = series.write_csv(args.out)
-    print(f"wrote {len(series)} closed 5m bars to {path}")
+    days = len(series) * 300 / 86_400
+    print(f"wrote {len(series):,} closed 5m bars ({days:.1f} days) to {path}")
     print(f"  {series.time_at(0):%Y-%m-%d %H:%M} .. "
           f"{series.time_at(-1):%Y-%m-%d %H:%M} UTC")
+    gaps = series.gaps()
+    if gaps:
+        missing = sum(n for _, n in gaps)
+        print(f"  {len(gaps)} gap(s), {missing:,} bars missing; data_integrity "
+              f"vetoes the bar after each one")
     return 0
 
 
@@ -521,7 +543,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exchange", default="binance",
                    choices=("binance", "coinbase", "kraken"))
     p.add_argument("--symbol")
-    p.add_argument("--limit", type=int, default=1000)
+    p.add_argument("--limit", type=int, default=1000,
+                   help="bars to fetch; above 1000 pages backwards "
+                        "(a year is 105120). kraken cannot page")
+    p.add_argument("--year", dest="limit", action="store_const", const=105_120,
+                   help="shorthand for --limit 105120")
+    p.add_argument("--pause", type=float, default=0.25,
+                   help="seconds between pages (default 0.25)")
     p.add_argument("-o", "--out", default="btc_5m.csv")
     p.set_defaults(func=cmd_fetch)
 

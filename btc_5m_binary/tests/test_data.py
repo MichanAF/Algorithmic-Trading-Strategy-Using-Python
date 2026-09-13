@@ -1,8 +1,12 @@
-"""Bar containers, CSV handling, and the synthetic generator's realism."""
+"""Bar containers, CSV handling, paged history, and the generator's realism."""
+
+import json
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
 
+from btc5m import data
 from btc5m.data import BAR_SECONDS, BarSeries, load_csv, synthetic
 
 
@@ -151,3 +155,178 @@ def test_time_at_returns_utc():
     s = synthetic(10, seed=1, start_ts=1_699_920_000)
     assert s.time_at(0).strftime("%Y-%m-%d %H:%M") == "2023-11-14 00:00"
     assert s.time_at(1).strftime("%H:%M") == "00:05"
+
+
+# --------------------------------------------------------------------------- #
+# paged history: the walk, without a network
+# --------------------------------------------------------------------------- #
+
+class _FakeBinance:
+    """A Binance klines endpoint holding a finite history.
+
+    Honours endTime and the 1000-row cap the way the real one does, so the
+    paging walk is exercised rather than mocked away.
+    """
+
+    def __init__(self, bars: int, last_close: int, page: int = 1000):
+        self.page, self.calls = page, []
+        self.rows = {}
+        for i in range(bars):
+            close = last_close - i * 300
+            self.rows[close] = [
+                (close - 300) * 1000, "100.0", "101.0", "99.0", "100.5",
+                "12.0", close * 1000 - 1]      # closeTime: last ms of the bar
+
+    def __call__(self, request, timeout=None):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        self.calls.append(url)
+        end_ms = int(url.split("endTime=")[1].split("&")[0])
+        end_s = end_ms // 1000
+        keys = sorted(k for k in self.rows if k <= end_s)[-self.page:]
+        return _Response(json.dumps([self.rows[k] for k in keys]))
+
+
+class _Response:
+    def __init__(self, text):
+        self._text = text
+
+    def read(self):
+        return self._text.encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_history_pages_backwards_until_it_has_enough(monkeypatch):
+    """One request caps at 1000 bars; a year needs 106 of them stitched."""
+    last = 1_757_675_700
+    fake = _FakeBinance(bars=5_000, last_close=last)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+
+    series = data.fetch_history("binance", "BTCUSDT", bars=2_500,
+                                pause_seconds=0)
+    assert len(series) == 2_500
+    assert len(fake.calls) == 3                  # 1000 + 1000 + 500 of a page
+    # Ascending, contiguous, and ending on the newest closed bar.
+    assert series.ts[-1] == last
+    assert list(np.diff(series.ts)) == [300] * 2_499
+
+
+def test_history_stops_when_the_exchange_runs_out(monkeypatch):
+    """A symbol younger than the request yields what exists, not a loop."""
+    fake = _FakeBinance(bars=1_200, last_close=1_757_675_700)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+
+    series = data.fetch_history("binance", bars=105_120, pause_seconds=0)
+    assert len(series) == 1_200
+    assert len(fake.calls) == 3        # third page returns nothing new, so stop
+
+
+def test_history_never_repeats_a_page(monkeypatch):
+    """The cursor steps past the oldest bar held, so pages cannot overlap."""
+    fake = _FakeBinance(bars=3_000, last_close=1_757_675_700)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+
+    data.fetch_history("binance", bars=3_000, pause_seconds=0)
+    ends = [int(u.split("endTime=")[1].split("&")[0]) for u in fake.calls]
+    assert ends == sorted(ends, reverse=True)
+    assert len(set(ends)) == len(ends)
+
+
+def test_history_drops_a_candle_that_has_not_closed(monkeypatch):
+    """Betting on an unclosed bar is how a 5-minute backtest becomes fiction."""
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    future = now + 600                      # a bar closing ten minutes from now
+    fake = _FakeBinance(bars=50, last_close=future)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+
+    series = data.fetch_history("binance", bars=50, pause_seconds=0)
+    assert series.ts[-1] <= now
+
+
+def test_history_refuses_kraken_with_the_reason():
+    """Its public OHLC endpoint serves ~720 candles whatever you ask for."""
+    with pytest.raises(ValueError, match="720"):
+        data.fetch_history("kraken", bars=105_120)
+
+
+def test_history_rejects_a_nonsense_bar_count():
+    with pytest.raises(ValueError, match="must be positive"):
+        data.fetch_history("binance", bars=0)
+
+
+def test_history_says_how_far_it_got_before_the_network_died(monkeypatch):
+    """A partial download is worth naming; a total failure gets the remedy."""
+    fake = _FakeBinance(bars=5_000, last_close=1_757_675_700)
+    state = {"n": 0}
+
+    def flaky(request, timeout=None):
+        state["n"] += 1
+        if state["n"] > 2:
+            raise data.urllib.error.URLError("connection reset")
+        return fake(request, timeout=timeout)
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="stopped responding after 2000"):
+        data.fetch_history("binance", bars=5_000, pause_seconds=0)
+
+
+def test_history_reports_an_unreachable_exchange_with_the_workaround(monkeypatch):
+    def dead(request, timeout=None):
+        raise data.urllib.error.URLError("blocked")
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", dead)
+    with pytest.raises(RuntimeError, match="geo-blocked"):
+        data.fetch_history("binance", bars=2_000, pause_seconds=0)
+
+
+# --------------------------------------------------------------------------- #
+# gaps
+# --------------------------------------------------------------------------- #
+
+def test_binance_bars_land_on_the_five_minute_boundary():
+    """closeTime is the last millisecond of the bar, so //1000 is a second short.
+    A one-second skew matters: predict.fun windows sit on exact 300s grids."""
+    open_ms = 1_757_675_400 * 1000
+    kline = [open_ms, "1", "2", "0.5", "1.5", "10", open_ms + 299_999]
+    rows = data._parse_candles("binance", [kline], "BTCUSDT")
+    assert rows[0][0] == 1_757_675_700
+    assert rows[0][0] % BAR_SECONDS == 0
+
+
+def test_every_exchange_labels_a_bar_by_its_close():
+    """Three payload shapes, one convention, or backtests silently disagree."""
+    boundary = 1_757_675_700
+    opened = boundary - BAR_SECONDS
+    binance = data._parse_candles(
+        "binance", [[opened * 1000, "1", "2", "0.5", "1.5", "10",
+                     opened * 1000 + 299_999]], "BTCUSDT")
+    coinbase = data._parse_candles(
+        "coinbase", [[opened, 0.5, 2, 1, 1.5, 10]], "BTC-USD")
+    kraken = data._parse_candles(
+        "kraken", {"result": {"XXBTZUSD": [
+            [opened, "1", "2", "0.5", "1.5", "0", "10"]]}}, "XBTUSD")
+    assert binance[0][0] == coinbase[0][0] == kraken[0][0] == boundary
+
+
+def test_gaps_finds_the_missing_stretches():
+    ts = [300, 600, 900, 2_100, 2_400, 4_200]      # 4 missing, then 5 missing
+    n = len(ts)
+    series = data.BarSeries(ts=ts, open=[1.0] * n, high=[1.0] * n,
+                            low=[1.0] * n, close=[1.0] * n, volume=[1.0] * n)
+    assert series.gaps() == [(3, 3), (5, 5)]
+    assert series.gap_count() == 2
+
+
+def test_a_contiguous_series_has_no_gaps():
+    series = data.synthetic(200, seed=3)
+    assert series.gaps() == []
+    assert series.gap_count() == 0
