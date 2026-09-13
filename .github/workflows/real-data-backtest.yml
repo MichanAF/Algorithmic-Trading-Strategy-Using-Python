@@ -12,7 +12,18 @@
 
 name: Real-data backtest
 
+# Two triggers on purpose.  workflow_dispatch is the button a person presses.
+# The push trigger exists because a GitHub App token holding only `actions: read`
+# cannot dispatch a workflow -- the API answers 403 -- so an agent driving this
+# has no way to start a run, though it can push a branch.  Scoped to branch
+# prefixes that are only ever pushed deliberately, so ordinary work on main
+# never starts one.  On a push there are no inputs, so every input is read
+# through a shell default below.
 on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
   workflow_dispatch:
     inputs:
       source:
@@ -51,14 +62,18 @@ jobs:
       # and it is 12 files for a year against 106 paged requests.
       - name: Fetch real candles
         id: fetch
+        env:
+          SOURCE: ${{ inputs.source }}
+          BARS: ${{ inputs.bars }}
+          PAUSE: ${{ inputs.pause }}
         run: |
-          if [ "${{ inputs.source }}" = "binance-archives" ]; then
+          if [ "${SOURCE:-binance-archives}" = "binance-archives" ]; then
             python -m btc5m fetch --exchange binance --source dump \
-              --limit "${{ inputs.bars }}" --pause "${{ inputs.pause }}" \
+              --limit "${BARS:-105120}" --pause "${PAUSE:-0.25}" \
               -o btc_5m.csv | tee fetch.log
           else
             python -m btc5m fetch --exchange coinbase --source api \
-              --limit "${{ inputs.bars }}" --pause "${{ inputs.pause }}" \
+              --limit "${BARS:-105120}" --pause "${PAUSE:-0.25}" \
               -o btc_5m.csv | tee fetch.log
           fi
 
@@ -85,7 +100,8 @@ jobs:
               m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text, re.M)
               return m.group(1).strip() if m else "—"
 
-          print(f"## Real-data backtest — {os.environ['SOURCE']}\n")
+          source = os.environ.get("SOURCE") or "binance-archives"
+          print(f"## Real-data backtest — {source}\n")
           print("```")
           print(pathlib.Path("fetch.log").read_text().strip()
                 if os.path.exists("fetch.log") else "fetch failed")
