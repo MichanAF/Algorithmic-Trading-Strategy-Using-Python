@@ -68,6 +68,34 @@ jobs:
             --thresholds 1,1.5,2,2.5 --volume-floors 0,1,1.5,2 \
             --config configs/fade-5m.json | tee flow-volume.log
 
+      # Decision 6: how the fade gate and the taker gate are wired together.
+      # Two candidate taker settings are on the table, so both are scored --
+      # each gate alone, both agreeing, and the AND / OR wirings -- at the
+      # signal level, then as bets under the fade config's own betting and
+      # risk settings.  Development year only.
+      - name: How do the fade gate and the taker gate combine?
+        run: |
+          for cand in "A 1.0 2.0" "C 2.0 0"; do
+            set -- $cand
+            echo "== candidate $1: taker_flow min_abs_z $2, min_volume_ratio $3 =="
+            python -m btc5m overlap --data dev.csv --config configs/fade-5m.json \
+              --gates data_integrity,mean_reversion,taker_flow,session \
+              --set gates.taker_flow.mode=fade \
+              --set gates.taker_flow.min_abs_z=$2 \
+              --set gates.taker_flow.min_volume_ratio=$3 \
+              | sed -n '/^3b\./,/^4\./p' | sed '$d'
+            for mode in unanimous weighted; do
+              echo "-- candidate $1, betting.mode $mode --"
+              python -m btc5m backtest --data dev.csv --config configs/fade-5m.json \
+                --gates data_integrity,mean_reversion,taker_flow,session \
+                --set gates.taker_flow.mode=fade \
+                --set gates.taker_flow.min_abs_z=$2 \
+                --set gates.taker_flow.min_volume_ratio=$3 \
+                --set betting.mode=$mode \
+                | grep -E "bets placed|hit rate|edge vs|max drawdown|HALTED|Sharpe"
+            done
+          done 2>&1 | tee combine-dev.log
+
       - name: Write the summary
         if: always()
         run: |
@@ -94,6 +122,10 @@ jobs:
           print("\n### The bar's own share with a volume floor\n")
           print("```text")
           print(text("flow-volume.log") or "flow did not run")
+          print("```")
+          print("\n### How the fade gate and the taker gate combine\n")
+          print("```text")
+          print(text("combine-dev.log") or "combination step did not run")
           print("```")
           PY
 
