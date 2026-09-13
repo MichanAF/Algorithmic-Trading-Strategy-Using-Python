@@ -116,7 +116,7 @@ the fade config) or from the year ending 2023-09-13.
   to the risk block, the stake, the venue's cost -- is a new hypothesis,
   and the next fresh year is the one ending 2022-09-13.
 
-## Decision 8: risk sizing for a 4,600-bet year -- pending
+## Decision 8: risk sizing for a 4,600-bet year -- a 0.10% stake, the 15% limit kept
 
 The halt clause failed because the risk block was sized for 235 bets a
 year. With a stake of s (a fraction of bankroll) and N bets, the typical
@@ -148,3 +148,27 @@ gas and $25 or more for gas to be a minor cost -- a bankroll of $10,000+
 at 0.25% or $25,000+ at 0.10% on predict.fun, or a venue without gas.
 The sizing chosen here fixes how far the strategy can fall before it
 stops; it does not fix that.
+
+- **Chosen:** option b, `risk.max_stake_pct: 0.001` with `max_drawdown_pct`
+  unchanged at 0.15. The 15% limit then sits at about 2.3 times an ordinary
+  year's drawdown -- a tripwire that means something is wrong -- at a fifth
+  of the profit and loss.
+- **Not chosen, and why.** a (0.25% stake, 30% limit) removes the halts but
+  keeps 16% drawdowns and swings from -13% to +64%; c (0.10% stake, 30%
+  limit) behaved identically to b on every year seen and loosens a limit
+  that no longer needs loosening.
+
+## The third pre-registered run
+
+- **Config:** `configs/fade-flow-sized-5m.json`, written 2026-09-13 after
+  Decision 8 and before any fetch of the fresh holdout. Relative to the
+  second config exactly one value differs: the stake per bet.
+- **Fresh holdout:** the year ending 2022-09-13. Nothing in this repository
+  had read it when the config was written.
+- **Pass criterion, fixed before the fetch, unchanged:** on the fresh
+  holdout the backtest's hit rate beats the 52.00% break-even by at least
+  +1.0%, significant at two standard errors, with no halt. Anything less
+  fails.
+- **Seen-year reference at this sizing** (run 34755963339): 2023 +2.21%,
+  2024 +1.53%, 2025 -0.70%, 2026 +1.94%; no halts, drawdowns at most 6.41%.
+- **Result:** pending the first run of `fade-flow-sized-hypothesis.yml`.

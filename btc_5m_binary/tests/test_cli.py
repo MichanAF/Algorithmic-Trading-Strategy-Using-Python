@@ -279,6 +279,22 @@ def test_the_fade_flow_config_loads_and_pins_its_decisions():
     assert "2023-09-13" in cfg_text() and "+1.0%" in cfg_text()
 
 
-def cfg_text() -> str:
+def test_the_sized_config_differs_from_the_fade_flow_config_in_one_value():
+    """The third pre-registered config: the second one with the stake per bet
+    moved from 0.25% to 0.10% of bankroll, nothing else."""
+    from btc5m.config import load_config, to_dict
+
+    sized = to_dict(load_config("configs/fade-flow-sized-5m.json"))
+    base = to_dict(load_config("configs/fade-flow-5m.json"))
+    assert sized["risk"]["max_stake_pct"] == 0.001
+    assert base["risk"]["max_stake_pct"] == 0.0025
+    sized["risk"]["max_stake_pct"] = base["risk"]["max_stake_pct"]
+    sized["name"] = base["name"]
+    assert sized == base
+    text = cfg_text("configs/fade-flow-sized-5m.json")
+    assert "2022-09-13" in text and "+1.0%" in text and "no halt" in text
+
+
+def cfg_text(path: str = "configs/fade-flow-5m.json") -> str:
     from pathlib import Path
-    return Path("configs/fade-flow-5m.json").read_text()
+    return Path(path).read_text()

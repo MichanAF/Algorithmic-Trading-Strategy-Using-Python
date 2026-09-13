@@ -813,6 +813,20 @@ a year-to-year range from −0.86% to +2.31%, before gas. The config is not
 edited; anything different is a new hypothesis with a new fresh year (the
 one ending 2022-09-13), and the full account is in `DECISIONS.md`.
 
+### The third hypothesis: the same signal, sized for its bet count
+
+`configs/fade-flow-sized-5m.json` is the second config with one value moved:
+the stake per bet, 0.25% of bankroll to 0.10%, chosen (Decision 8 in
+`DECISIONS.md`) from four sizings run on the four years already seen. With a
+stake of s and N bets an ordinary year's drawdown is about s × √N, so at
+0.25% and 4,600 bets the 15% limit sat on top of a normal year; at 0.10% it
+sits at about 2.3 times one. On the seen years that sizing halted in none,
+with drawdowns of at most 6.4% and yearly results from −4.7% to +20.5% --
+none of it evidence, all of it burned. The fresh holdout is the year ending
+2022-09-13, the pass bar is unchanged, and
+`.github/workflows/fade-flow-sized-hypothesis.yml` runs it once. The result
+goes here and in `DECISIONS.md`, whichever way it falls.
+
 ### Conviction now predicts accuracy, which it did not before
 
 The five-gate stack had a **non-monotone** calibration: its most confident
@@ -1248,7 +1262,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            405 tests
+tests/            406 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1258,7 +1272,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 405 passed
+python -m pytest tests/ -q      # 406 passed
 ```
 
 ---
