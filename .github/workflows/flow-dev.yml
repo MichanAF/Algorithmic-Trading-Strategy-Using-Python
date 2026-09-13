@@ -59,6 +59,15 @@ jobs:
           python -m btc5m flow --data dev.csv --minute dev-1m.csv \
             --config configs/fade-5m.json | tee flow-dev.log
 
+      # Decision 2 fixed the read at the bar's own share, faded.  The volume
+      # floor is a later value, so it is scored on that read alone: what does
+      # ignoring thin bars buy at each |z| floor?
+      - name: What does a volume floor buy on the bar's own share?
+        run: |
+          python -m btc5m flow --data dev.csv --windows 0 \
+            --thresholds 1,1.5,2,2.5 --volume-floors 0,1,1.5,2 \
+            --config configs/fade-5m.json | tee flow-volume.log
+
       - name: Write the summary
         if: always()
         run: |
@@ -81,6 +90,10 @@ jobs:
           print("the development year; nothing later was fetched or scored here.\n")
           print("```text")
           print(text("flow-dev.log") or "flow did not run")
+          print("```")
+          print("\n### The bar's own share with a volume floor\n")
+          print("```text")
+          print(text("flow-volume.log") or "flow did not run")
           print("```")
           PY
 

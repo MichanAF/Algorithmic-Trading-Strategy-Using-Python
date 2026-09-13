@@ -317,8 +317,11 @@ def cmd_flow(args) -> int:
     minute = _load_minute(args)
     windows = _number_list(args.windows, int, "--windows")
     thresholds = _number_list(args.thresholds, float, "--thresholds")
+    floors = _number_list(args.volume_floors, float, "--volume-floors")
     if any(w < 0 for w in windows):
         raise SystemExit("--windows takes minutes >= 1, or 0 for the bar's own share")
+    if any(x < 0 for x in floors):
+        raise SystemExit("--volume-floors takes multiples of median volume >= 0")
     if series.taker_buy is None and 0 in windows:
         raise SystemExit("--data has no taker_buy column, so the full-bar share "
                          "cannot be read; fetch the series from binance")
@@ -333,7 +336,7 @@ def cmd_flow(args) -> int:
             raise SystemExit("nothing to measure: give --minute, or --windows 0")
 
     corrs = flow_correlation(series, cfg, minute, windows)
-    cells = flow_edge(series, cfg, minute, windows, thresholds)
+    cells = flow_edge(series, cfg, minute, windows, thresholds, floors)
     print(render_flow(corrs, cells,
                       "Does the taker share just before the open predict the window?"))
     print("\nRead the first table's sign before anything else: negative means the")
@@ -641,6 +644,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "the 5m bar's own share (default: 1,2,3,5,0)")
     p.add_argument("--thresholds", default="1,1.5,2,2.5", metavar="Z,...",
                    help="|z| floors to score (default: 1,1.5,2,2.5)")
+    p.add_argument("--volume-floors", default="0", metavar="X,...",
+                   help="volume floors to score, as multiples of the bar's "
+                        "rolling median volume; 0 = none (default: 0)")
     p.set_defaults(func=cmd_flow)
 
     p = sub.add_parser("compare", help="score candidate gate stacks")

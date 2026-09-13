@@ -236,9 +236,26 @@ def test_render_flow_names_the_band_and_the_missing_volume_floor():
                        flow_edge(series, cfg, minute), "title line")
     assert text.startswith("title line")
     for needle in ("noise", "before UP", "last 1 min", "last 3 min",
-                   "full 5m bar", "|z|>=", "follow", "fade", "no volume floor",
+                   "full 5m bar", "|z|>=", "vol>=", "follow", "fade",
                    "break-even to beat"):
         assert needle in text, needle
+
+
+def test_a_volume_floor_only_removes_thin_bars():
+    series, minute = _planted(1500)
+    cfg = config_from_dict(FLOW_CFG)
+    none, median, high = flow_edge(series, cfg, minute, windows=(0,),
+                                   thresholds=(1.0,), volume_floors=(0.0, 1.0, 5.0))
+    assert none.follow.signals >= median.follow.signals >= high.follow.signals
+    assert median.follow.signals > 0                 # half the bars are above median
+    assert (none.volume_floor, median.volume_floor, high.volume_floor) == (0.0, 1.0, 5.0)
+    assert "vol>=1x" in median.follow.label and "vol>=" not in none.follow.label
+    # No floor asked for is the same as a floor of zero: warm-up bars of the
+    # median are not silently dropped.
+    default = flow_edge(series, cfg, minute, windows=(0,), thresholds=(1.0,))[0]
+    assert default.follow.signals == none.follow.signals
+    text = render_flow([], [none, median, high], "t")
+    assert " none" in text and " 1.0x" in text and " 5.0x" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +326,24 @@ def test_cli_flow_validates_its_lists(tmp_path):
         main(["flow", "--data", str(five), "--windows", "one"])
     with pytest.raises(SystemExit, match="minutes >= 1"):
         main(["flow", "--data", str(five), "--windows", "-1"])
+    with pytest.raises(SystemExit, match="volume-floors"):
+        main(["flow", "--data", str(five), "--windows", "0",
+              "--volume-floors", "-1"])
+
+
+def test_cli_flow_scores_volume_floors_on_the_bar(tmp_path, capsys):
+    series, _ = _planted(800)
+    five = tmp_path / "five.csv"
+    series.write_csv(five)
+    code = main(["flow", "--data", str(five), "--windows", "0",
+                 "--thresholds", "1", "--volume-floors", "0,1"])
+    out = capsys.readouterr().out
+    assert code == 0
+    # The correlation table has a "full 5m bar" row too; grid rows carry a %.
+    rows = [line for line in out.splitlines()
+            if line.startswith("  full 5m bar") and "%" in line]
+    assert len(rows) == 2
+    assert " none" in rows[0] and " 1.0x" in rows[1]
 
 
 def test_cli_notes_a_minute_source_with_no_minute_file(capsys):

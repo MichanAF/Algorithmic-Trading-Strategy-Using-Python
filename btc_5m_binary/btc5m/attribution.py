@@ -276,6 +276,7 @@ class FlowCell:
     threshold: float
     follow: EdgeStats                   # a bet WITH the flow
     fade: EdgeStats                     # the same signals, bet AGAINST it
+    volume_floor: float = 0.0           # bar volume over its rolling median; 0 = none
 
     @property
     def label(self) -> str:
@@ -343,20 +344,26 @@ def flow_correlation(series: BarSeries, cfg: StrategyConfig,
 def flow_edge(series: BarSeries, cfg: StrategyConfig,
               minute: BarSeries | None = None,
               windows: Sequence[int] = (1, 2, 3, 5, 0),
-              thresholds: Sequence[float] = (1.0, 1.5, 2.0, 2.5)
+              thresholds: Sequence[float] = (1.0, 1.5, 2.0, 2.5),
+              volume_floors: Sequence[float] = (0.0,)
               ) -> list[FlowCell]:
     """Accuracy of betting with, and against, the pre-open flow at each |z| floor.
 
     The share is z-scored over ``gates.taker_flow.z_window`` bars exactly as
     the gate does it; a window fires when |z| clears the floor and the share is
-    off 0.5.  No volume floor is applied here -- that is a separate decision,
-    and folding it in would hide what the flow alone is worth.  Ties are void.
+    off 0.5.  A volume floor -- the bar's volume over its rolling median, the
+    gate's own ``volume_ratio`` -- is applied only when asked for, so what the
+    flow alone is worth stays visible next to what the floor buys.  Ties are
+    void.
     """
     outcome, horizon = _horizon_outcomes(series, cfg)
     last = max(0, len(series) - horizon)
     days = max(1e-9, len(series) / BARS_PER_DAY)
     break_even = cfg.break_even_probability()
     z_window = cfg.gates.taker_flow.z_window
+    vol_med = ind.rolling_median(series.volume, cfg.gates.participation.volume_window)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        volume_ratio = np.where(vol_med > 0, series.volume / vol_med, np.nan)
     cells: list[FlowCell] = []
     for minutes in windows:
         share = _flow_share(series, minute, minutes)
@@ -364,23 +371,28 @@ def flow_edge(series: BarSeries, cfg: StrategyConfig,
              else np.full(len(share), np.nan))
         side = np.where(share > 0.5, UP, np.where(share < 0.5, DOWN, FLAT))
         for threshold in thresholds:
-            fire = np.isfinite(z) & (np.abs(z) >= threshold) & (side != FLAT)
-            fire[last:] = False
-            graded = fire & (outcome != 0)
-            wins = int((graded & (side == outcome)).sum())
-            losses = int((graded & (side == -outcome)).sum())
-            voids = int((fire & (outcome == 0)).sum())
-            signals = int(fire.sum())
-            label = ("full 5m bar" if minutes == 0 else f"last {minutes} min"
-                     ) + f" |z|>={threshold:g}"
-            follow = EdgeStats(label=label + " follow", signals=signals,
-                               wins=wins, losses=losses, voids=voids,
-                               break_even=break_even, days=days)
-            fade = EdgeStats(label=label + " fade", signals=signals,
-                             wins=losses, losses=wins, voids=voids,
-                             break_even=break_even, days=days)
-            cells.append(FlowCell(minutes=minutes, threshold=threshold,
-                                  follow=follow, fade=fade))
+            base = np.isfinite(z) & (np.abs(z) >= threshold) & (side != FLAT)
+            base[last:] = False
+            for floor in volume_floors:
+                fire = base if floor <= 0 else base & (volume_ratio >= floor)
+                graded = fire & (outcome != 0)
+                wins = int((graded & (side == outcome)).sum())
+                losses = int((graded & (side == -outcome)).sum())
+                voids = int((fire & (outcome == 0)).sum())
+                signals = int(fire.sum())
+                label = ("full 5m bar" if minutes == 0 else f"last {minutes} min"
+                         ) + f" |z|>={threshold:g}"
+                if floor > 0:
+                    label += f" vol>={floor:g}x"
+                follow = EdgeStats(label=label + " follow", signals=signals,
+                                   wins=wins, losses=losses, voids=voids,
+                                   break_even=break_even, days=days)
+                fade = EdgeStats(label=label + " fade", signals=signals,
+                                 wins=losses, losses=wins, voids=voids,
+                                 break_even=break_even, days=days)
+                cells.append(FlowCell(minutes=minutes, threshold=threshold,
+                                      follow=follow, fade=fade,
+                                      volume_floor=float(floor)))
     return cells
 
 
@@ -400,19 +412,22 @@ def render_flow(corrs: Sequence[FlowCorrelation], cells: Sequence[FlowCell],
         lines.append(f"  {c.label:<13}{c.bars:>9,}{corr:>8}{band:>8}"
                      f"{up:>11}{down:>13}   {c.reading}")
     lines.append("")
-    lines.append(f"  {'window':<13}{'|z|>=':>6}{'signals':>9}{'per day':>9}"
-                 f"{'follow':>8}{'fade':>8}   better{'vs b/e':>9}{'z':>6}   verdict")
+    lines.append(f"  {'window':<13}{'|z|>=':>6}{'vol>=':>6}{'signals':>9}"
+                 f"{'per day':>9}{'follow':>8}{'fade':>8}   better{'vs b/e':>9}"
+                 f"{'z':>6}   verdict")
     for cell in cells:
         f, d, b = cell.follow, cell.fade, cell.better
         follow = f"{f.accuracy:.2%}" if f.accuracy is not None else "n/a"
         fade = f"{d.accuracy:.2%}" if d.accuracy is not None else "n/a"
         edge = f"{b.edge:+.2%}" if b.edge is not None else "n/a"
         z = f"{b.z:+.1f}" if b.z is not None else "n/a"
-        lines.append(f"  {cell.label:<13}{cell.threshold:>6.1f}{f.signals:>9,}"
-                     f"{f.per_day:>9.2f}{follow:>8}{fade:>8}   {cell.better_mode:<6}"
-                     f"{edge:>9}{z:>6}   {b.verdict}")
+        floor = f"{cell.volume_floor:.1f}x" if cell.volume_floor > 0 else "none"
+        lines.append(f"  {cell.label:<13}{cell.threshold:>6.1f}{floor:>6}"
+                     f"{f.signals:>9,}{f.per_day:>9.2f}{follow:>8}{fade:>8}   "
+                     f"{cell.better_mode:<6}{edge:>9}{z:>6}   {b.verdict}")
     if cells:
         c0 = cells[0].follow
         lines.append(f"  break-even to beat: {c0.break_even:.2%}   sample: "
-                     f"{c0.days:.0f} days   ties void, no volume floor")
+                     f"{c0.days:.0f} days   ties void; vol>= is bar volume over "
+                     f"its rolling median")
     return "\n".join(lines)
