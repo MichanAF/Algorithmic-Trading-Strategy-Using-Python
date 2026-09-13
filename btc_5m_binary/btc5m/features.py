@@ -204,6 +204,22 @@ def build_features(series: BarSeries, cfg: StrategyConfig,
     f["close_z"] = ind.zscore(c, mr.z_window)
     f["rsi_mr"] = ind.rsi(c, mr.rsi_period)
 
+    # -- taker flow --------------------------------------------------------- #
+    # The one input here that is not a function of price.  Absent from
+    # synthetic bars and from CSVs written before the column existed, in which
+    # case the features are NaN and the gate reports itself as warming up
+    # rather than voting on nothing.
+    tf = g.taker_flow
+    if series.taker_buy is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            raw = np.where(v > 0, series.taker_buy / v, np.nan)
+        share = raw if tf.window <= 1 else ind.sma(raw, tf.window)
+        f["taker_ratio"] = share
+        f["taker_z"] = ind.zscore(share, tf.z_window)
+    else:
+        f["taker_ratio"] = np.full(n, np.nan)
+        f["taker_z"] = np.full(n, np.nan)
+
     # -- clock -------------------------------------------------------------- #
     f["hour_utc"] = ((series.ts // 3600) % 24).astype(float)
     f["minute_of_hour"] = ((series.ts % 3600) // 60).astype(float)

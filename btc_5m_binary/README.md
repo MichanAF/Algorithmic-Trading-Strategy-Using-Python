@@ -222,6 +222,21 @@ If you have trade-level data, this is the gate to upgrade: cumulative volume
 delta and taker buy/sell imbalance are strictly better than candle-derived
 proxies. The interface is `Gate._evaluate`; add the feature in `features.py`.
 
+### Order flow, the one input that is not price
+| Gate | Factors |
+|---|---|
+| `taker_flow` | Taker-buy share of each bar's volume (Binance publishes it in every kline; the archives carry it), z-scored against the last day; a volume floor so imbalance on thin bars does not count |
+
+Every other gate in this menu is a function of open, high, low, close and
+volume, and every one of them measured at or below break-even on real BTC. A
+stack of price-derived gates can only re-ask the same question with different
+wording. Order flow asks a different one: *who was aggressing?* Its support in
+the microstructure literature is at seconds to a minute; whether it survives,
+or inverts, at a five-minute horizon on BTC is an empirical question, and
+`mode` (`"follow"` or `"fade"`) is the parameter that encodes the answer. Its
+values ship as placeholders and are chosen through the pre-registration
+protocol, not by sweeping.
+
 ### Location and structure
 | Gate | Factors |
 |---|---|

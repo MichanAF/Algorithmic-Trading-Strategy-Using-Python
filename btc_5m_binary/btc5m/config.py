@@ -140,6 +140,29 @@ class CrossAssetParams:
 
 
 @dataclass
+class TakerFlowParams:
+    """Who is aggressing: taker buy volume as a share of all volume.
+
+    Binance's klines carry ``taker_buy_base_volume`` per bar, so this is order
+    flow imbalance from data already in hand, not a new source.  It is the
+    best-supported short-horizon signal in the microstructure literature -- but
+    that support is at seconds to a minute, and whether it persists or inverts
+    at five minutes on BTC is exactly what the development year is for.
+
+    **Every value here is a placeholder awaiting a pre-registered choice.**
+    ``mode`` is the decision that matters: ``"follow"`` bets that aggressive
+    buying continues to lift price over the next bar; ``"fade"`` bets that an
+    extreme of aggression marks a climax.  The other three set how extreme is
+    extreme, over what span, and whether thin volume counts.
+    """
+    mode: str = "follow"               # "follow" | "fade"
+    window: int = 1                    # bars averaged before scoring; 1 = the bar itself
+    z_window: int = 288                # lookback for the z-score of the ratio; 288 = one day
+    min_abs_z: float = 1.5             # how far from typical the imbalance must be
+    min_volume_ratio: float = 1.0      # ignore imbalance on volume below this x median
+
+
+@dataclass
 class GateParams:
     data_integrity: DataIntegrityParams = field(default_factory=DataIntegrityParams)
     volatility_regime: VolatilityRegimeParams = field(default_factory=VolatilityRegimeParams)
@@ -150,6 +173,7 @@ class GateParams:
     session: SessionParams = field(default_factory=SessionParams)
     persistence: PersistenceParams = field(default_factory=PersistenceParams)
     mean_reversion: MeanReversionParams = field(default_factory=MeanReversionParams)
+    taker_flow: TakerFlowParams = field(default_factory=TakerFlowParams)
     cross_asset: CrossAssetParams = field(default_factory=CrossAssetParams)
 
 

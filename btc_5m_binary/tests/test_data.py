@@ -521,3 +521,74 @@ class _Response_bytes:
 
     def __exit__(self, *exc):
         return False
+
+
+# --------------------------------------------------------------------------- #
+# the taker-buy column: kept from the source, survives the CSV, optional
+# --------------------------------------------------------------------------- #
+
+def _bars(n=5, taker=True):
+    ts = 1_757_675_700 + np.arange(n) * BAR_SECONDS
+    ones = np.ones(n)
+    return BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones,
+                     volume=ones * 10.0,
+                     taker_buy=(np.arange(n, dtype=float) + 1.0) if taker else None)
+
+
+def test_binance_klines_keep_the_taker_buy_column():
+    """Field 9 of a kline is taker_buy_base_volume; it was being discarded."""
+    opened = 1_757_675_400
+    full = [opened * 1000, "1", "2", "0.5", "1.5", "10", opened * 1000 + 299_999,
+            "15.0", "42", "6.0", "9.0", "0"]
+    row = data._parse_candles("binance", [full], "BTCUSDT")[0]
+    assert row[6] == pytest.approx(6.0)
+
+
+def test_a_short_kline_yields_nan_taker_rather_than_crashing():
+    """Test fakes and some mirrors send seven fields; the column is optional."""
+    opened = 1_757_675_400
+    short = [opened * 1000, "1", "2", "0.5", "1.5", "10", opened * 1000 + 299_999]
+    row = data._parse_candles("binance", [short], "BTCUSDT")[0]
+    assert np.isnan(row[6])
+
+
+def test_other_exchanges_carry_a_nan_taker_column():
+    opened = 1_757_675_400
+    coinbase = data._parse_candles("coinbase", [[opened, 0.5, 2, 1, 1.5, 10]], "BTC-USD")
+    assert np.isnan(coinbase[0][6])
+
+
+def test_archives_keep_the_taker_buy_column():
+    rows = data._dump_rows(_zip_klines([(1_757_675_400, "100.5")]), "BTCUSDT")
+    assert rows[0][6] == pytest.approx(6.0)        # taker_base in the fixture
+
+
+def test_taker_buy_survives_a_csv_round_trip(tmp_path):
+    path = tmp_path / "bars.csv"
+    _bars().write_csv(path)
+    header = path.read_text().splitlines()[0]
+    assert "taker_buy" in header
+    back = data.load_csv(path)
+    assert back.taker_buy is not None
+    assert list(back.taker_buy) == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+
+def test_a_series_without_taker_buy_writes_and_loads_without_it(tmp_path):
+    path = tmp_path / "bars.csv"
+    _bars(taker=False).write_csv(path)
+    assert "taker_buy" not in path.read_text().splitlines()[0]
+    assert data.load_csv(path).taker_buy is None
+
+
+def test_taker_buy_is_carried_through_slicing():
+    s = _bars(n=6)[2:5]
+    assert list(s.taker_buy) == [3.0, 4.0, 5.0]
+    assert _bars(taker=False)[1:3].taker_buy is None
+
+
+def test_taker_buy_length_is_validated():
+    ts = 1_757_675_700 + np.arange(3) * BAR_SECONDS
+    ones = np.ones(3)
+    with pytest.raises(ValueError, match="taker_buy length"):
+        BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones,
+                  volume=ones, taker_buy=np.ones(2))

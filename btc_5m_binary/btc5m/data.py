@@ -35,20 +35,28 @@ class BarSeries:
     close: np.ndarray
     volume: np.ndarray
     spread_bps: np.ndarray | None = None
+    # Taker-buy base volume per bar: the share of each bar's volume that was
+    # aggressive buying.  Binance publishes it in every kline; other exchanges
+    # do not, and synthetic bars have none, so it is optional like spread_bps.
+    taker_buy: np.ndarray | None = None
     symbol: str = "BTCUSDT"
 
     def __post_init__(self) -> None:
         self.ts = np.asarray(self.ts, dtype=np.int64)
         for name in ("open", "high", "low", "close", "volume"):
             setattr(self, name, np.asarray(getattr(self, name), dtype=float))
-        if self.spread_bps is not None:
-            self.spread_bps = np.asarray(self.spread_bps, dtype=float)
+        for name in ("spread_bps", "taker_buy"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, np.asarray(value, dtype=float))
         lengths = {len(self.ts), len(self.open), len(self.high),
                    len(self.low), len(self.close), len(self.volume)}
         if len(lengths) != 1:
             raise ValueError(f"ragged series: column lengths {sorted(lengths)}")
-        if self.spread_bps is not None and len(self.spread_bps) != len(self.ts):
-            raise ValueError("spread_bps length does not match the series")
+        for name in ("spread_bps", "taker_buy"):
+            value = getattr(self, name)
+            if value is not None and len(value) != len(self.ts):
+                raise ValueError(f"{name} length does not match the series")
         if len(self.ts) > 1 and np.any(np.diff(self.ts) <= 0):
             raise ValueError("timestamps must be strictly increasing")
 
@@ -65,6 +73,7 @@ class BarSeries:
             ts=self.ts[sl], open=self.open[sl], high=self.high[sl],
             low=self.low[sl], close=self.close[sl], volume=self.volume[sl],
             spread_bps=None if self.spread_bps is None else self.spread_bps[sl],
+            taker_buy=None if self.taker_buy is None else self.taker_buy[sl],
             symbol=self.symbol,
         )
 
@@ -93,16 +102,25 @@ class BarSeries:
     def write_csv(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # The taker column is written only when the series carries it, so a
+        # CSV from a source without it stays byte-identical to before and a
+        # reader never sees a column of NaN pretending to be data.
+        with_taker = self.taker_buy is not None
         with path.open("w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+            header = ["timestamp", "open", "high", "low", "close", "volume"]
+            w.writerow(header + (["taker_buy"] if with_taker else []))
             for i in range(len(self)):
-                w.writerow([
+                row = [
                     int(self.ts[i]),
                     f"{self.open[i]:.2f}", f"{self.high[i]:.2f}",
                     f"{self.low[i]:.2f}", f"{self.close[i]:.2f}",
                     f"{self.volume[i]:.6f}",
-                ])
+                ]
+                if with_taker:
+                    t = self.taker_buy[i]
+                    row.append("" if np.isnan(t) else f"{t:.6f}")
+                w.writerow(row)
         return path
 
 
@@ -119,6 +137,8 @@ _ALIASES = {
     "close": "close", "c": "close", "adj close": "close", "adj_close": "close",
     "volume": "volume", "v": "volume", "vol": "volume", "base_volume": "volume",
     "spread_bps": "spread_bps", "spread": "spread_bps",
+    "taker_buy": "taker_buy", "taker_buy_base": "taker_buy",
+    "taker_buy_base_asset_volume": "taker_buy", "taker_buy_volume": "taker_buy",
 }
 
 
@@ -152,7 +172,7 @@ def load_csv(path: str | Path, symbol: str = "BTCUSDT") -> BarSeries:
             f"{path}: no recognisable close column in header {rows[0]!r}"
         )
     cols: dict[str, list] = {k: [] for k in ("ts", "open", "high", "low", "close",
-                                             "volume", "spread_bps")}
+                                             "volume", "spread_bps", "taker_buy")}
     for line_no, row in enumerate(rows[1:], start=2):
         if not row or all(not cell.strip() for cell in row):
             continue
@@ -188,6 +208,7 @@ def load_csv(path: str | Path, symbol: str = "BTCUSDT") -> BarSeries:
         close=close,
         volume=column("volume", np.ones(n)),
         spread_bps=np.asarray(cols["spread_bps"], dtype=float) if len(cols["spread_bps"]) == n else None,
+        taker_buy=np.asarray(cols["taker_buy"], dtype=float) if len(cols["taker_buy"]) == n else None,
         symbol=symbol,
     )
 
@@ -242,7 +263,7 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
 
     cols = list(zip(*rows))
     return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
-                     close=cols[4], volume=cols[5], symbol=symbol)
+                     close=cols[4], volume=cols[5], taker_buy=cols[6], symbol=symbol)
 
 
 def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
@@ -252,6 +273,12 @@ def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
     by a bar's ts.  Binance gives it directly; Coinbase and Kraken label a candle
     by its open, so a bar length is added.
     """
+    # Every row is (close_ts, o, h, l, c, v, taker_buy).  Only Binance publishes
+    # the taker-buy base volume -- field 9 of a kline -- so it is NaN elsewhere,
+    # and NaN when a mirror or a test fake sends a short row.
+    def taker(k) -> float:
+        return float(k[9]) if len(k) > 9 else float("nan")
+
     if exchange == "binance":
         # Derived from openTime, not closeTime.  Binance's closeTime is the last
         # *millisecond* of the interval (openTime + 299999), so //1000 lands a
@@ -260,11 +287,11 @@ def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
         # cosmetic here: predict.fun windows sit on exact 300-second grids, and
         # seconds_into_window is measured against a 30-second entry budget.
         rows = [(int(k[0]) // 1000 + BAR_SECONDS, float(k[1]), float(k[2]),
-                 float(k[3]), float(k[4]), float(k[5])) for k in payload]
+                 float(k[3]), float(k[4]), float(k[5]), taker(k)) for k in payload]
     elif exchange == "coinbase":
         # [time, low, high, open, close, volume], newest first.
         rows = [(int(k[0]) + BAR_SECONDS, float(k[3]), float(k[2]), float(k[1]),
-                 float(k[4]), float(k[5])) for k in payload]
+                 float(k[4]), float(k[5]), float("nan")) for k in payload]
     else:
         result = payload.get("result", {})
         if payload.get("error"):
@@ -273,7 +300,7 @@ def _parse_candles(exchange: str, payload, symbol: str) -> list[tuple]:
         if key is None:
             raise RuntimeError(f"kraken returned no OHLC data for {symbol!r}")
         rows = [(int(k[0]) + BAR_SECONDS, float(k[1]), float(k[2]), float(k[3]),
-                 float(k[4]), float(k[6])) for k in result[key]]
+                 float(k[4]), float(k[6]), float("nan")) for k in result[key]]
     rows.sort(key=lambda r: r[0])
     return rows
 
@@ -373,7 +400,7 @@ def fetch_history(exchange: str = "binance", symbol: str | None = None,
     ordered = [collected[ts] for ts in sorted(collected)][-bars:]
     cols = list(zip(*ordered))
     return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
-                     close=cols[4], volume=cols[5], symbol=symbol)
+                     close=cols[4], volume=cols[5], taker_buy=cols[6], symbol=symbol)
 
 
 # Binance's public data dumps.  Not the trading API: these are static archives
@@ -419,8 +446,11 @@ def _dump_rows(blob: bytes, symbol: str) -> list[tuple]:
             continue                      # the header row
         # Milliseconds are ~1.7e12, microseconds ~1.7e15.
         opened = int(raw_open / (1e6 if raw_open > 1e14 else 1e3))
+        # Field 9 is taker_buy_base_volume, the one input in this package that
+        # is not a function of price.  Kept, not discarded.
+        taker = float(parts[9]) if len(parts) > 9 and parts[9] else float("nan")
         rows.append((opened + BAR_SECONDS, float(parts[1]), float(parts[2]),
-                     float(parts[3]), float(parts[4]), float(parts[5])))
+                     float(parts[3]), float(parts[4]), float(parts[5]), taker))
     rows.sort(key=lambda r: r[0])
     return rows
 
@@ -511,7 +541,7 @@ def fetch_binance_dump(symbol: str = "BTCUSDT", bars: int = 105_120,
     # range BarSeries.gaps() reports it, and if it is at the old end the series
     # simply comes back shorter than asked for, which the caller can see.
     return BarSeries(ts=cols[0], open=cols[1], high=cols[2], low=cols[3],
-                     close=cols[4], volume=cols[5], symbol=symbol)
+                     close=cols[4], volume=cols[5], taker_buy=cols[6], symbol=symbol)
 
 
 def fetch_topofbook_mid(symbol: str = "BTCUSDT", timeout: int = 10) -> dict:
