@@ -1,0 +1,114 @@
+# Fetch real BTC history and backtest on it, from a phone.
+#
+# Every performance number in btc_5m_binary/README.md came off a synthetic
+# generator.  This workflow is the one that can disprove the strategy: it pulls
+# real 5-minute candles from a public exchange and runs the same engine over
+# them.  Trigger it from the Actions tab (the GitHub mobile app works), then read
+# the run summary -- the numbers are written to the summary page rather than
+# buried in the log, because that is what is legible on a phone.
+#
+# The number that matters is **hit rate minus break-even**.  Synthetic data gave
+# +6.11% on predict.fun.  Under about +1% on real data, there is no strategy.
+
+name: Real-data backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      exchange:
+        description: "Exchange to pull candles from"
+        type: choice
+        default: coinbase
+        options: [coinbase, binance]
+      bars:
+        description: "5-minute bars (105120 = one year, 8640 = 30 days)"
+        default: "105120"
+      pause:
+        description: "Seconds between requests"
+        default: "0.25"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # Binance geo-blocks US IPs with a 451, and GitHub's hosted runners are
+      # mostly US, so coinbase is the default rather than the better-known one.
+      - name: Fetch real candles
+        id: fetch
+        run: |
+          python -m btc5m fetch \
+            --exchange "${{ inputs.exchange }}" \
+            --limit "${{ inputs.bars }}" \
+            --pause "${{ inputs.pause }}" \
+            -o btc_5m.csv | tee fetch.log
+
+      - name: Backtest on predict.fun settings
+        run: |
+          python -m btc5m backtest --data btc_5m.csv \
+            --config configs/predict-fun-bnb-5m.json | tee predictfun.log
+
+      - name: Backtest on Polymarket settings
+        run: |
+          python -m btc5m backtest --data btc_5m.csv \
+            --config configs/polymarket-5m.json | tee polymarket.log
+
+      # Pull the decisive lines out of each run and put them on the summary page,
+      # which renders as markdown and is readable on a phone.
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib, re
+
+          def field(log, label):
+              text = pathlib.Path(log).read_text() if os.path.exists(log) else ""
+              m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text, re.M)
+              return m.group(1).strip() if m else "—"
+
+          print(f"## Real-data backtest — {os.environ['EXCHANGE']}\n")
+          print("```")
+          print(pathlib.Path("fetch.log").read_text().strip()
+                if os.path.exists("fetch.log") else "fetch failed")
+          print("```\n")
+
+          rows = ["bets placed", "hit rate", "break-even needed",
+                  "edge vs break-even", "max drawdown", "annualised Sharpe",
+                  "longest loss streak"]
+          print("| | predict.fun | Polymarket |")
+          print("|---|---|---|")
+          for label in rows:
+              bold = "**" if label == "edge vs break-even" else ""
+              print(f"| {bold}{label}{bold} | {field('predictfun.log', label)} "
+                    f"| {field('polymarket.log', label)} |")
+
+          print("\n**Read `edge vs break-even`.** Synthetic data gave +6.11% "
+                "on predict.fun and +5.22% on Polymarket. Under about +1% here, "
+                "the edge is not real and the honest move is to stop.\n")
+          print("Full output is in the step logs; the CSV is attached as an "
+                "artifact so the same run can be reproduced locally.")
+          PY
+        env:
+          EXCHANGE: ${{ inputs.exchange }}
+
+      - name: Keep the candles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-5m-real-candles
+          path: btc_5m_binary/btc_5m.csv
+          if-no-files-found: warn
+          retention-days: 30
