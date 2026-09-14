@@ -1,0 +1,112 @@
+# What a $1,000 bankroll does with this signal, in dollars, on years already
+# seen.
+#
+# The bankroll on the table is $1,000.  The sized config stakes 0.10% a bet,
+# which at $1,000 is $1 -- under predict.fun's gas, under Polymarket's $5
+# minimum order, and under the config's own minimum stake, so the validator
+# refuses it.  The smallest stake either venue accepts is a much larger
+# fraction of $1,000 than Decision 8 sized for: $5 is 0.5%, and Polymarket's
+# minimum makes it 0.75%, with typical drawdowns of stake x sqrt(bets) --
+# a third to a half of the bankroll in an ordinary year.  This workflow runs
+# the pooled config with the bankroll set to $1,000 and the stake set to the
+# smallest each venue accepts, on the six years already burned for this
+# signal, so the decision is made on dollars rather than percentages.
+# The backtest subtracts no gas; the summary subtracts $0.30 a bet for
+# predict.fun, the placeholder still to be measured.  Nothing here is a test.
+
+name: A $1,000 bankroll, seen years
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - '.github/workflows/bankroll-seen.yml'
+  workflow_dispatch:
+
+jobs:
+  bankroll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      - name: Fetch the six seen years
+        run: |
+          for y in 2021 2022 2023 2024 2025 2026; do
+            python -m btc5m fetch --year --end $y-09-13 -o y$y.csv | tail -2
+          done
+
+      # Four variants: each venue at its smallest stake, with the daily loss
+      # limit as pinned (4% of bankroll, which at $1,000 is $40 -- eight net
+      # losing bets in a day) and loosened to 20%.  The drawdown limit is set
+      # to 50% so the year runs to its end and the drawdown itself is read.
+      - name: Backtest each variant on each year
+        run: |
+          run_variant () {
+            label=$1; venue=$2; fee=$3; tie=$4; stake=$5; minstake=$6; daily=$7
+            for y in 2021 2022 2023 2024 2025 2026; do
+              echo "== variant $label venue $venue stake $stake daily $daily year ending $y-09-13 =="
+              python -m btc5m backtest --data y$y.csv --config configs/fade-flow-pooled-5m.json \
+                --set venue=$venue --set betting.fee_bps=$fee --set betting.tie_policy=$tie \
+                --set risk.starting_bankroll=1000 --set risk.max_stake_pct=$stake \
+                --set risk.min_stake=$minstake --set risk.max_drawdown_pct=0.5 \
+                --set risk.daily_loss_limit_pct=$daily \
+                | grep -E "bets placed|hit rate|edge vs|net P&L|max drawdown|HALTED|daily_loss_limit|loss_streak_cooldown|strategy_health"
+            done
+          }
+          {
+            run_variant "predictfun-pinned-daily" predict-fun-btc-5m 200 void 0.005 2 0.04
+            run_variant "predictfun-loose-daily" predict-fun-btc-5m 200 void 0.005 2 0.20
+            run_variant "polymarket-pinned-daily" polymarket-btc-5m 175 favor_up 0.0075 5 0.04
+            run_variant "polymarket-loose-daily" polymarket-btc-5m 175 favor_up 0.0075 5 0.20
+          } 2>&1 | tee bankroll.log
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib, re
+          text = pathlib.Path("bankroll.log").read_text() if os.path.exists("bankroll.log") else ""
+          blocks = re.split(r"^== variant ", text, flags=re.M)[1:]
+          rows = []
+          for b in blocks:
+              head, _, body = b.partition("\n")
+              m = re.match(r"(\S+) venue (\S+) stake ([\d.]+) daily ([\d.]+) year ending (\d{4})", head)
+              if not m:
+                  continue
+              def f(label):
+                  mm = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", body, re.M)
+                  return mm.group(1).strip() if mm else "—"
+              bets_m = re.search(r"bets placed\s+([\d,]+)", body)
+              bets = int(bets_m.group(1).replace(",", "")) if bets_m else 0
+              pnl_m = re.search(r"net P&L\s+([+-][\d,.]+)", body)
+              pnl = float(pnl_m.group(1).replace(",", "")) if pnl_m else 0.0
+              gas = 0.30 * bets if m.group(2).startswith("predict") else 0.0
+              daily = re.search(r"daily_loss_limit\s+(\d+)", body)
+              rows.append((m.group(1), m.group(5), f("bets placed"), f("hit rate"),
+                           f("edge vs break-even"), pnl, pnl - gas, f("max drawdown"),
+                           daily.group(1) if daily else "0", "yes" if "HALTED" in body else "no"))
+          print("## A $1,000 bankroll on the six seen years — dollars, not percentages\n")
+          print("Stake is the smallest each venue accepts: $5 on predict.fun (0.5% of "
+                "bankroll), $7.50 on Polymarket (its $5 minimum with the config's 1.5x "
+                "headroom, 0.75%). Drawdown limit set to 50% so each year runs to its end. "
+                "predict.fun's net column subtracts $0.30 gas a bet, a placeholder. "
+                "Nothing here is a test; every year was burned before this run.\n")
+          print("| variant | year | bets | hit rate | edge | P&L before gas | net after gas | max drawdown | days stopped by the daily limit | halted |")
+          print("|---|---|---|---|---|---|---|---|---|---|")
+          for r in rows:
+              print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]:+,.0f} | {r[6]:+,.0f} | {r[7]} | {r[8]} | {r[9]} |")
+          PY
