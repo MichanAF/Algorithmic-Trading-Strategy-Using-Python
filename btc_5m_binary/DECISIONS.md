@@ -322,3 +322,68 @@ $25 stake at 0.10% is a $25,000 bankroll; at 0.25% it is $10,000 with the
 wider drawdown that sizing carries. None of these figures survive a live
 quote that has already moved off 50/50 when the gates fire, which is the
 next thing to measure, along with the real gas.
+
+### Decision 10, first value: the bankroll is $1,000
+
+The person building the strategy set the bankroll at $1,000. At that size
+the sizing chosen in Decision 8 cannot run: 0.10% of $1,000 is $1 a bet,
+under predict.fun's gas, under Polymarket's $5 minimum order and under the
+config's own minimum stake, so the validator refuses the config. The
+smallest stake each venue accepts is a far larger fraction of $1,000 than
+Decision 8 sized for -- $5 on predict.fun is 0.5%, Polymarket's minimum
+with the config's 1.5x headroom is $7.50, 0.75% -- with typical drawdowns
+of a third to a half of the bankroll in an ordinary year.
+
+Run [34791665012](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34791665012):
+the pooled config with the bankroll set to $1,000 and each venue's
+smallest stake, on the six years already burned, the drawdown limit set to
+50% so each year runs to its end. Stakes compound with the bankroll, which
+is why the dollar figures exceed a flat-stake estimate. Nothing here is a
+test.
+
+**predict.fun, $5 a bet (0.5%), daily loss limit 4% as pinned.** The
+backtest subtracts no gas; the table does, at the $0.30 placeholder.
+
+| year | bets | hit rate | P&L before gas | gas at $0.30 | net after gas | gas per bet that breaks even | max drawdown | days the 4% daily limit stopped play |
+|---|---|---|---|---|---|---|---|---|
+| 2021 | 4,796 | 52.47% | +115 | -1,439 | -1,323 | $0.02 | 34.8% | 1 |
+| 2022 | 5,008 | 53.27% | +711 | -1,502 | -792 | $0.14 | 23.3% | 17 |
+| 2023 | 4,959 | 54.20% | +1,490 | -1,488 | +2 | $0.30 | 28.0% | 6 |
+| 2024 | 4,625 | 53.49% | +772 | -1,388 | -615 | $0.17 | 16.5% | 10 |
+| 2025 | 4,083 | 51.30% | -230 | -1,225 | -1,455 | none | 27.2% | 2 |
+| 2026 | 4,081 | 53.95% | +908 | -1,224 | -316 | $0.22 | 14.3% | 6 |
+
+Five of six years lose after gas at $0.30; the sixth breaks even. The
+last-but-two column is the gas per bet at which each year would have
+broken even: for the strategy to net money at $1,000 on predict.fun, a
+real bet has to cost about $0.15 or less. That number has not been
+measured. The 4% daily limit ($40) stopped play on up to 17 days a year;
+loosening it to 20% changed the year's result by under $100 either way.
+
+**Polymarket, $7.50 a bet (0.75%), daily loss limit loosened to 20%**, for
+completeness -- the venue's own rules on where it may be used come first,
+and no server location changes them.
+
+| year | bets | hit rate | P&L, no gas | max drawdown |
+|---|---|---|---|---|
+| 2021 | 404 | 44.31% | -335 | 36.3% |
+| 2022 | 5,020 | 53.23% | +1,452 | 33.5% |
+| 2023 | 4,962 | 54.17% | +3,789 | 41.3% |
+| 2024 | 4,633 | 53.59% | +1,926 | 23.8% |
+| 2025 | 3,586 | 51.06% | -337 | 38.6% |
+| 2026 | 4,087 | 53.90% | +2,159 | 20.8% |
+
+The 2021 row is a lock-up, not a bad year: an early drawdown took the
+bankroll under $667, 0.75% of it fell below the $5 minimum, and no bet
+was placed again -- 404 bets, the exact failure the validator's 1.5x
+headroom is meant to prevent and cannot at this scale. Drawdowns of 21%
+to 41% in the other years. The 4% daily limit stopped play on 57 to 158
+days a year at this stake.
+
+What it says. $1,000 is below the scale at which this signal's economics
+work on predict.fun unless a real bet costs a fraction of the placeholder
+gas, and on Polymarket it works only with a third to half of the bankroll
+at risk in an ordinary year and a lock-up in a bad one. The two numbers
+that decide the predict.fun case -- gas per bet, and whether the quote is
+still near 50/50 when the gates fire -- are measured live at no cost, and
+come before any other choice.
