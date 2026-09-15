@@ -62,7 +62,20 @@ jobs:
           show "https://gamma-api.polymarket.com/public-search?q=bitcoin%20up%20or%20down&limit_per_type=5"
           show "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=2&order=startDate&ascending=false"
           show "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=2&order=startDate&ascending=false"
-          show "https://clob.polymarket.com/sampling-simplified-markets"
+          cid=$(curl -sS --max-time 20 "https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-$ts" \
+                | python -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0].get("conditionId","") if rows else "")')
+          test -n "$cid" && show "https://clob.polymarket.com/markets/$cid"
+
+      # The fee formula is documented, not in the API.  The docs site is a
+      # Mintlify site, which serves an index of its pages as llms.txt and each
+      # page as markdown; both are cut short.  Read only.
+      - name: Fee documentation, for the record
+        if: always()
+        run: |
+          show () { echo; echo "== $1"; curl -sSL --max-time 20 -H "Accept: text/markdown" "$1" | head -c "$2"; echo; }
+          show "https://docs.polymarket.com/llms.txt" 6000
+          show "https://docs.polymarket.com/polymarket-learn/trading/fees.md" 5000
+          show "https://docs.polymarket.com/developers/CLOB/fees.md" 5000
 
       - name: Write the summary
         if: always()

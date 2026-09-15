@@ -5,23 +5,36 @@ Two hosts, no keys, no signing, no orders:
     gamma-api.polymarket.com   market and event metadata (what exists, when it
                                opens and closes, which two token ids trade)
     clob.polymarket.com        the order book for a token id (what a share
-                               costs right now)
+                               costs right now), and the market's own record
 
 Both answer unauthenticated GETs.  Nothing in this module can move money: the
 CLOB's order endpoints need a signed API key and a funded wallet, and neither
 is anywhere in this repository.
 
-Field names are best guesses until ``btc5m probe --venue polymarket`` has run
-against the live API, exactly as predict.fun's were: the probe prints raw
-payloads so the guesses can be corrected from evidence rather than memory.
-Gamma is known to encode some list fields as JSON *strings* (``outcomes``,
-``outcomePrices``, ``clobTokenIds``), so every list here is read through a
-decoder that accepts either form.
+What the live API confirmed, from ``btc5m probe --venue polymarket-btc-5m``
+run on 2026-09-15 (the workflow ``polymarket-probe.yml`` keeps the log):
+
+* A five-minute BTC window is one market in one event, both at the slug
+  ``btc-updown-5m-<start>`` where ``<start>`` is the window's opening second
+  as a unix timestamp.  ``/markets?slug=`` and ``/events?slug=`` both answer.
+* ``endDate`` is the window's end.  ``startDate`` is **not** its start: it is
+  when the market went live, about a day earlier.  The start comes from the
+  slug, and the window length from the slug's ``5m``.
+* ``outcomes``, ``outcomePrices`` and ``clobTokenIds`` are JSON-encoded
+  *strings*; every list here is read through a decoder that accepts either
+  form.  Outcomes are ``Up`` and ``Down``, in that order.
+* ``orderMinSize`` is 5 (shares), ``orderPriceMinTickSize`` 0.01.
+* Resolution: Up if the Chainlink BTC/USD 60-second TWAP at the end of the
+  window is greater than or equal to the price at its start.  A tie pays Up.
+* ``makerBaseFee`` and ``takerBaseFee`` are both 1000 on the live market.
+  What a base fee of 1000 costs per share is read from the CLOB and the fee
+  documentation on the runner, not assumed here.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,18 +47,19 @@ from .venue import POLYMARKET_BTC_5M, MarketQuote, VenueRules
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+WINDOW_SECONDS = 300
 
-# The words a five-minute BTC up/down market's question or slug carries.  The
-# probe reports what the live ones actually say; widen this from evidence.
+# The words a BTC up/down market's question or slug carries.
 _UP_DOWN_WORDS = ("up or down", "up-or-down", "updown", "up/down")
 
-# Polymarket's series markets are addressed by slug, and the slug of a timed
-# window appears to carry the window's start as a unix timestamp.  These are
-# the candidate shapes for a five-minute BTC window starting at ``ts``; the
-# probe tries each against the live API and reports which, if any, answers.
-_SLUG_PATTERNS = ("btc-updown-5m-{ts}", "btc-up-or-down-5m-{ts}",
-                  "bitcoin-up-or-down-5m-{ts}", "btc-usd-updown-5m-{ts}")
-WINDOW_SECONDS = 300
+# A timed window's slug: asset, length in minutes, opening second.  Confirmed
+# live: btc-updown-5m-1789481100 is "Bitcoin Up or Down - September 15,
+# 10:05AM-10:10AM ET", and 1789481100 is 14:05:00 UTC that day.
+_SLUG_RE = re.compile(r"^(?P<asset>[a-z0-9]+)-updown-(?P<minutes>\d+)m-(?P<ts>\d{9,11})$")
+
+
+class PolymarketError(RuntimeError):
+    pass
 
 
 def window_start(now: int, seconds: int = WINDOW_SECONDS) -> int:
@@ -53,8 +67,9 @@ def window_start(now: int, seconds: int = WINDOW_SECONDS) -> int:
     return now - now % seconds
 
 
-class PolymarketError(RuntimeError):
-    pass
+def slug_for_window(start_ts: int, asset: str = "btc", minutes: int = 5) -> str:
+    """The slug Polymarket gives the ``minutes``-minute ``asset`` window at ``start_ts``."""
+    return f"{asset}-updown-{minutes}m-{start_ts}"
 
 
 def _json_list(value: Any) -> list:
@@ -90,6 +105,20 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _as_float(value: Any) -> float | None:
+    """A plain number (a size, a fee rate, a delay), not a price."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_opt_bool(value: Any) -> bool | None:
+    return None if value is None else _as_bool(value)
+
+
 # --------------------------------------------------------------------------- #
 # markets
 # --------------------------------------------------------------------------- #
@@ -106,15 +135,26 @@ class PolyMarket:
     outcomes: list[str]
     token_ids: list[str]
     outcome_prices: list[float | None]
-    starts_at: int | None
-    ends_at: int | None
+    starts_at: int | None                  # the window's opening second (from the slug)
+    ends_at: int | None                    # the window's end (endDate)
     active: bool
     closed: bool
     accepting_orders: bool
+    asset: str = ""                        # from the slug: "btc", "eth", ...
+    window_minutes: int | None = None      # from the slug: 5, 15, 60, ...
+    listed_at: int | None = None           # Gamma's startDate: when it went live
+    created_at: int | None = None
+    resolution_source: str = ""
     best_bid: float | None = None          # Gamma's own view of outcome 0's book
     best_ask: float | None = None
     tick: float | None = None
-    min_order: float | None = None
+    min_order: float | None = None         # shares, not a price
+    maker_base_fee: float | None = None    # as sent; units confirmed on the runner
+    taker_base_fee: float | None = None
+    fees_enabled: bool | None = None
+    fee_schedule: Any = None
+    seconds_delay: float | None = None
+    clear_book_on_start: bool | None = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -123,30 +163,52 @@ class PolyMarket:
         prices = [_as_price(p) for p in _json_list(_first(payload, "outcomePrices"))]
         tokens = [str(t) for t in _json_list(_first(payload, "clobTokenIds",
                                                      "clob_token_ids", "tokenIds"))]
-        # A market nested in an event may carry its window on the event.
+        slug = str(_first(payload, "slug", "marketSlug") or "")
+        # A market nested in an event may carry its dates on the event.
         events = _first(payload, "events") or []
         event = events[0] if isinstance(events, list) and events and isinstance(events[0], dict) else {}
-        starts = _first(payload, "startDate", "start_date", "startDateIso", "gameStartTime")
-        ends = _first(payload, "endDate", "end_date", "endDateIso")
-        if starts is None:
-            starts = _first(event, "startDate", "start_date")
+        listed = _as_epoch(_first(payload, "startDate", "start_date"))
+        if listed is None:
+            listed = _as_epoch(_first(event, "startDate", "start_date"))
+        ends = _as_epoch(_first(payload, "endDate", "end_date"))
         if ends is None:
-            ends = _first(event, "endDate", "end_date")
+            ends = _as_epoch(_first(event, "endDate", "end_date"))
+
+        timed = _SLUG_RE.match(slug)
+        asset, minutes, starts = "", None, None
+        if timed:
+            asset, minutes, starts = timed["asset"], int(timed["minutes"]), int(timed["ts"])
+            if ends is None:
+                ends = starts + minutes * 60
+        else:
+            # Only a declared start counts; the listing time is not the window.
+            starts = _as_epoch(_first(payload, "gameStartTime", "game_start_time"))
+
         return cls(
             market_id=str(_first(payload, "id", "marketId") or ""),
             question=str(_first(payload, "question", "title") or ""),
-            slug=str(_first(payload, "slug", "marketSlug") or ""),
+            slug=slug,
             condition_id=str(_first(payload, "conditionId", "condition_id") or ""),
             outcomes=outcomes, token_ids=tokens, outcome_prices=prices,
-            starts_at=_as_epoch(starts), ends_at=_as_epoch(ends),
+            starts_at=starts, ends_at=ends,
             active=_as_bool(_first(payload, "active")),
             closed=_as_bool(_first(payload, "closed")),
             accepting_orders=_as_bool(_first(payload, "acceptingOrders",
                                              "accepting_orders")),
+            asset=asset, window_minutes=minutes,
+            listed_at=listed,
+            created_at=_as_epoch(_first(payload, "createdAt", "created_at")),
+            resolution_source=str(_first(payload, "resolutionSource") or ""),
             best_bid=_as_price(_first(payload, "bestBid", "best_bid")),
             best_ask=_as_price(_first(payload, "bestAsk", "best_ask")),
-            tick=_as_price(_first(payload, "orderPriceMinTickSize")),
-            min_order=_as_price(_first(payload, "orderMinSize")),
+            tick=_as_float(_first(payload, "orderPriceMinTickSize")),
+            min_order=_as_float(_first(payload, "orderMinSize")),
+            maker_base_fee=_as_float(_first(payload, "makerBaseFee")),
+            taker_base_fee=_as_float(_first(payload, "takerBaseFee")),
+            fees_enabled=_as_opt_bool(_first(payload, "feesEnabled")),
+            fee_schedule=_first(payload, "feeSchedule"),
+            seconds_delay=_as_float(_first(payload, "secondsDelay")),
+            clear_book_on_start=_as_opt_bool(_first(payload, "clearBookOnStart")),
             raw=payload,
         )
 
@@ -157,13 +219,15 @@ class PolyMarket:
         return self.ends_at - self.starts_at
 
     def is_five_minute(self) -> bool:
-        return self.window_seconds == 300
+        return self.window_seconds == WINDOW_SECONDS
 
     def is_up_down(self) -> bool:
         text = f"{self.question} {self.slug}".lower()
         return any(w in text for w in _UP_DOWN_WORDS)
 
     def is_btc(self) -> bool:
+        if self.asset:
+            return self.asset == "btc"
         return _looks_like_btc(self.question) or "btc" in self.slug.lower()
 
     def is_open(self, now: int | None = None) -> bool:
@@ -179,6 +243,19 @@ class PolyMarket:
             if name.strip().lower() == want:
                 return token
         return None
+
+    def settled_side(self) -> str | None:
+        """'Up' or 'Down' once Gamma has moved the prices to 1 and 0; else None."""
+        if not self.closed or len(self.outcomes) != len(self.outcome_prices):
+            return None
+        winners = [name for name, price in zip(self.outcomes, self.outcome_prices)
+                   if price is not None and price >= 0.999]
+        # _as_price reads an exact 1 as "not a price"; Gamma sends "1" and "0".
+        if not winners:
+            raw = _json_list(_first(self.raw, "outcomePrices"))
+            winners = [name for name, price in zip(self.outcomes, raw)
+                       if _as_float(price) is not None and _as_float(price) >= 0.999]
+        return winners[0] if len(winners) == 1 else None
 
 
 # --------------------------------------------------------------------------- #
@@ -203,23 +280,16 @@ class Book:
                 if not isinstance(row, dict):
                     continue
                 price = _as_price(_first(row, "price"))
-                size = _first(row, "size")
-                try:
-                    size = float(size) if size is not None else 0.0
-                except (TypeError, ValueError):
-                    size = 0.0
+                size = _as_float(_first(row, "size"))
                 if price is not None:
-                    out.append((price, size))
+                    out.append((price, size if size is not None else 0.0))
             return out
         bids = sorted(levels(_first(payload, "bids")), key=lambda x: -x[0])
         asks = sorted(levels(_first(payload, "asks")), key=lambda x: x[0])
-        ts = _first(payload, "timestamp")
-        try:
-            ts_int = int(float(ts)) if ts is not None else None
-            if ts_int is not None and ts_int > 1e11:      # milliseconds
-                ts_int //= 1000
-        except (TypeError, ValueError):
-            ts_int = None
+        ts = _as_float(_first(payload, "timestamp"))
+        ts_int = int(ts) if ts is not None else None
+        if ts_int is not None and ts_int > 1e11:          # milliseconds
+            ts_int //= 1000
         return cls(token_id=str(_first(payload, "asset_id", "token_id") or token_id),
                    bids=bids, asks=asks, timestamp=ts_int)
 
@@ -249,6 +319,13 @@ class Book:
             return 0.0
         limit = self.asks[0][0] if up_to is None else up_to
         return sum(size for price, size in self.asks if price <= limit + 1e-12)
+
+    def bid_depth(self, down_to: float | None = None) -> float:
+        """Shares bid at the best bid, or at or above ``down_to``."""
+        if not self.bids:
+            return 0.0
+        limit = self.bids[0][0] if down_to is None else down_to
+        return sum(size for price, size in self.bids if price >= limit - 1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +398,7 @@ class PolymarketClient:
         return PolyMarket.from_payload(items[0]) if items else None
 
     def event_by_slug(self, slug: str) -> list[PolyMarket]:
-        """The markets nested in the event at ``slug``, with the event's window."""
+        """The markets nested in the event at ``slug``, with the event's dates."""
         found = []
         for event in self._items(self._get(self.gamma_url, "/events", slug=slug)):
             for raw in _json_list(event.get("markets")):
@@ -331,28 +408,26 @@ class PolymarketClient:
                     found.append(PolyMarket.from_payload(merged))
         return found
 
-    def markets_by_slug_guess(self, start_ts: int) -> list[tuple[str, str, PolyMarket]]:
-        """Every (slug, endpoint, market) that answers for a window at ``start_ts``.
+    def market_for_window(self, start_ts: int, asset: str = "btc",
+                          minutes: int = 5) -> PolyMarket | None:
+        """The market for the window opening at ``start_ts``, by its slug.
 
-        Tries each candidate slug shape on both the market and the event
-        endpoint.  A miss is an empty answer, not an error; a network error
-        propagates.
+        The market endpoint first, the event endpoint if that is empty.  A
+        window nobody has listed is None; a network error propagates.
         """
-        hits: list[tuple[str, str, PolyMarket]] = []
-        for pattern in _SLUG_PATTERNS:
-            slug = pattern.format(ts=start_ts)
-            market = self.market_by_slug(slug)
-            if market is not None:
-                hits.append((slug, "markets", market))
-            for market in self.event_by_slug(slug):
-                hits.append((slug, "events", market))
-        return hits
+        slug = slug_for_window(start_ts, asset, minutes)
+        market = self.market_by_slug(slug)
+        if market is not None:
+            return market
+        nested = self.event_by_slug(slug)
+        return nested[0] if nested else None
 
     def btc_five_minute_markets(self, limit: int = 100) -> list[PolyMarket]:
         """Every five-minute BTC up/down market in the newest ``limit``.
 
-        Events are searched as well as markets, because a series market can
-        carry its window on the event rather than on itself.
+        The listing is ordered by listing time, and windows are listed about a
+        day ahead, so this finds tomorrow's windows more readily than the one
+        open now.  ``market_for_window`` is the way to the current window.
         """
         found: dict[str, PolyMarket] = {}
         for raw in self.markets(limit=limit):
@@ -371,25 +446,20 @@ class PolymarketClient:
                         found[market.market_id or market.slug] = market
         return sorted(found.values(), key=lambda m: m.starts_at or 0)
 
-    def current_btc_window(self, now: int | None = None,
-                           limit: int = 100) -> PolyMarket | None:
+    def current_btc_window(self, now: int | None = None) -> PolyMarket | None:
+        """The five-minute BTC market whose window contains ``now``."""
         now = now if now is not None else int(datetime.now(tz=timezone.utc).timestamp())
-        candidates = self.btc_five_minute_markets(limit=limit)
-        open_now = [m for m in candidates if m.is_open(now)]
-        if open_now:
-            return open_now[-1]
-        # The next window, if it opens within a minute: the watcher polls a
-        # few seconds early and must not be told there is nothing.
-        soon = [m for m in candidates if m.starts_at is not None
-                and 0 <= m.starts_at - now <= 60]
-        if soon:
-            return soon[0]
-        # The listing may not reach a series market at all; address the
-        # current window by slug instead.
-        for _, _, market in self.markets_by_slug_guess(window_start(now)):
-            if market.is_btc() and (market.is_open(now) or market.window_seconds is None):
-                return market
-        return None
+        market = self.market_for_window(window_start(now))
+        if market is not None:
+            return market
+        # The slug shape may change one day; the listing is the slow road.
+        open_now = [m for m in self.btc_five_minute_markets() if m.is_open(now)]
+        return open_now[-1] if open_now else None
+
+    def next_btc_window(self, now: int | None = None) -> PolyMarket | None:
+        """The window after the one containing ``now``; the watcher polls early."""
+        now = now if now is not None else int(datetime.now(tz=timezone.utc).timestamp())
+        return self.market_for_window(window_start(now) + WINDOW_SECONDS)
 
     # -- CLOB ------------------------------------------------------------ #
 
@@ -400,6 +470,11 @@ class PolymarketClient:
     def midpoint(self, token_id: str) -> float | None:
         payload = self._get(self.clob_url, "/midpoint", token_id=token_id)
         return _as_price(_first(payload, "mid", "midpoint")) if isinstance(payload, dict) else None
+
+    def clob_market(self, condition_id: str) -> dict:
+        """The CLOB's own record of a market: fees, delay, tick, tokens."""
+        payload = self._get(self.clob_url, f"/markets/{condition_id}")
+        return payload if isinstance(payload, dict) else {}
 
     def quote(self, market: PolyMarket, observed_ts: int | None = None,
               rules: VenueRules = POLYMARKET_BTC_5M) -> tuple[MarketQuote, Book, Book]:
@@ -431,97 +506,129 @@ class PolymarketClient:
 # --------------------------------------------------------------------------- #
 
 
+def _describe(m: PolyMarket) -> list[str]:
+    return [
+        f"  id        {m.market_id}   slug {m.slug[:70]}   condition {m.condition_id[:18]}...",
+        f"  question  {m.question[:80]}",
+        f"  window    {m.starts_at} -> {m.ends_at} ({m.window_seconds}s)   "
+        f"listed {m.listed_at}   created {m.created_at}",
+        f"  flags     active {m.active} closed {m.closed} accepting {m.accepting_orders}   "
+        f"secondsDelay {m.seconds_delay}   clearBookOnStart {m.clear_book_on_start}",
+        f"  outcomes  {m.outcomes}   prices {m.outcome_prices}   settled {m.settled_side()}",
+        f"  tokens    {[t[:12] + '...' for t in m.token_ids]}   tick {m.tick} min order {m.min_order}",
+        f"  fees      maker {m.maker_base_fee} taker {m.taker_base_fee} enabled {m.fees_enabled}"
+        f"   schedule {json.dumps(m.fee_schedule, default=str)[:200]}",
+        f"  resolves  {m.resolution_source}",
+    ]
+
+
 def probe(client: PolymarketClient, limit: int = 5) -> str:
     """Print what the two APIs actually return, so the guesses can be replaced."""
-    lines = [f"gamma      {client.gamma_url}", f"clob       {client.clob_url}", ""]
-
-    try:
-        raw_markets = client.markets(limit=max(limit, 50))
-    except PolymarketError as exc:
-        return "\n".join(lines + [f"markets: {exc}"])
-    lines.append(f"newest active markets returned: {len(raw_markets)}")
-    if raw_markets:
-        lines.append(f"keys on a market: {sorted(raw_markets[0])}")
-    parsed = [PolyMarket.from_payload(r) for r in raw_markets]
-    durations: dict[str, int] = {}
-    for m in parsed:
-        s = m.window_seconds
-        key = f"{s // 60}min" if s and s % 60 == 0 else (f"{s}s" if s else "unknown")
-        durations[key] = durations.get(key, 0) + 1
-    lines.append(f"window lengths in this page: "
-                 f"{', '.join(f'{k} x{v}' for k, v in sorted(durations.items()))}")
-    btc = [m for m in parsed if m.is_btc()]
-    updown = [m for m in btc if m.is_up_down()]
-    five = [m for m in updown if m.is_five_minute()]
-    lines.append(f"btc: {len(btc)}   btc up/down: {len(updown)}   "
-                 f"five-minute btc up/down: {len(five)}")
-    lines.append("")
-    for m in (five or updown or btc or parsed)[:limit]:
-        lines += [
-            f"  id        {m.market_id}   slug {m.slug[:70]}",
-            f"  question  {m.question[:80]}",
-            f"  window    {m.starts_at} -> {m.ends_at} ({m.window_seconds}s)"
-            f"   active {m.active} closed {m.closed} accepting {m.accepting_orders}",
-            f"  outcomes  {m.outcomes}   prices {m.outcome_prices}",
-            f"  tokens    {[t[:12] + '...' for t in m.token_ids]}   tick {m.tick} min {m.min_order}",
-            "",
-        ]
-
     now = int(datetime.now(tz=timezone.utc).timestamp())
     start = window_start(now)
-    lines.append(f"now {now}  current window {start} -> {start + WINDOW_SECONDS}  "
-                 f"slug guesses for this window and the next:")
-    for ts in (start, start + WINDOW_SECONDS):
-        try:
-            hits = client.markets_by_slug_guess(ts)
-        except PolymarketError as exc:
-            lines.append(f"  {ts}: {exc}")
-            continue
-        if not hits:
-            lines.append(f"  {ts}: no candidate slug answered "
-                         f"({', '.join(p.format(ts=ts) for p in _SLUG_PATTERNS)})")
-        for slug, endpoint, m in hits:
-            lines.append(f"  HIT {slug} via /{endpoint}: {m.question[:60]!r} "
-                         f"window {m.starts_at} -> {m.ends_at} ({m.window_seconds}s) "
-                         f"outcomes {m.outcomes} tokens {len(m.token_ids)}")
-            if m.is_btc() and m.is_five_minute() and m not in five:
-                five.append(m)
-    lines.append("")
+    lines = [f"gamma      {client.gamma_url}", f"clob       {client.clob_url}",
+             f"now        {now}   current window {start} -> {start + WINDOW_SECONDS}   "
+             f"slug {slug_for_window(start)}", ""]
 
-    if not five:
-        try:
-            events = client.events(limit=max(limit, 50))
-            lines.append(f"newest active events returned: {len(events)}")
-            if events:
-                lines.append(f"keys on an event: {sorted(events[0])}")
-            titled = [(str(e.get('title') or e.get('slug') or '')[:70],
-                       str(e.get('slug') or '')[:60],
-                       len(_json_list(e.get('markets'))))
-                      for e in events]
-            for title, slug, n in titled[:limit * 3]:
-                lines.append(f"  event  {title:<70} {slug:<60} markets {n}")
-        except PolymarketError as exc:
-            lines.append(f"events: {exc}")
-        lines.append("")
-        lines.append("No five-minute BTC up/down market matched the text filters; "
-                     "read the slugs above and widen _UP_DOWN_WORDS or the BTC test.")
-
-    target = next((m for m in five if m.is_open(now)), five[-1] if five else None)
-    if target is not None and target.token_ids:
-        lines.append(f"order book for {target.slug[:60]} "
-                     f"({'open' if target.is_open(now) else 'not open'})")
-        for name, token in zip(target.outcomes, target.token_ids):
+    # 1. The current window, addressed by slug.
+    current = None
+    try:
+        current = client.market_for_window(start)
+    except PolymarketError as exc:
+        return "\n".join(lines + [f"current window: {exc}"])
+    if current is None:
+        lines.append("current window: nothing at that slug on /markets or /events")
+    else:
+        lines.append(f"current window ({'open' if current.is_open(now) else 'NOT open'}):")
+        lines += _describe(current)
+        for name, token in zip(current.outcomes, current.token_ids):
             try:
                 raw = client._get(client.clob_url, "/book", token_id=token)
                 book = Book.from_payload(raw, token_id=token)
                 lines.append(f"  {name:<6} bid {book.best_bid} ask {book.best_ask} "
                              f"mid {book.mid} spread {book.spread} "
-                             f"ask depth {book.ask_depth():.0f}   "
+                             f"bid depth {book.bid_depth():.0f} ask depth {book.ask_depth():.0f}   "
                              f"book keys {sorted(raw) if isinstance(raw, dict) else type(raw).__name__}")
             except PolymarketError as exc:
                 lines.append(f"  {name:<6} book: {exc}")
+        clob_raw: dict = {}
+        if current.condition_id:
+            try:
+                clob_raw = client.clob_market(current.condition_id)
+                picked = {k: clob_raw.get(k) for k in (
+                    "maker_base_fee", "taker_base_fee", "fee_rate_bps", "seconds_delay",
+                    "game_start_time", "end_date_iso", "minimum_order_size",
+                    "minimum_tick_size", "accepting_orders", "accepting_order_timestamp",
+                    "neg_risk", "is_50_50_outcome", "enable_order_book") if k in clob_raw}
+                lines.append(f"  clob      keys {sorted(clob_raw)}")
+                lines.append(f"  clob      {json.dumps(picked, default=str)}")
+                tokens = clob_raw.get("tokens")
+                if isinstance(tokens, list):
+                    lines.append(f"  clob      tokens {json.dumps(tokens, default=str)[:400]}")
+            except PolymarketError as exc:
+                lines.append(f"  clob      market: {exc}")
+        if current.token_ids:
+            try:
+                fee = client._get(client.clob_url, "/fee-rate", token_id=current.token_ids[0])
+                lines.append(f"  fee-rate  {json.dumps(fee, default=str)[:300]}")
+            except PolymarketError as exc:
+                lines.append(f"  fee-rate  {str(exc)[:200]}")
+    lines.append("")
+
+    # 2. The neighbours: is the next one listed, how does a settled one look.
+    for label, ts in (("next", start + WINDOW_SECONDS), ("previous", start - WINDOW_SECONDS),
+                      ("an hour ago", start - 12 * WINDOW_SECONDS)):
+        try:
+            m = client.market_for_window(ts)
+        except PolymarketError as exc:
+            lines.append(f"{label} window {ts}: {exc}")
+            continue
+        if m is None:
+            lines.append(f"{label} window {ts}: not listed")
+        else:
+            lines.append(f"{label} window {ts}: {m.slug}   closed {m.closed} accepting "
+                         f"{m.accepting_orders}   prices {m.outcome_prices}   settled "
+                         f"{m.settled_side()}   uma {json.dumps(m.raw.get('umaResolutionStatuses'), default=str)[:120]}")
+    lines.append("")
+
+    # 3. The listing, for the record: what else is there and how it is named.
+    try:
+        raw_markets = client.markets(limit=max(limit, 50))
+    except PolymarketError as exc:
+        raw_markets = []
+        lines.append(f"markets listing: {exc}")
     if raw_markets:
-        lines.append("\nRaw first matching market:")
-        first = (five or updown or btc or parsed)[0].raw
-        lines.append(json.dumps(first, indent=2, default=str)[:3000])
+        parsed = [PolyMarket.from_payload(r) for r in raw_markets]
+        timed: dict[str, int] = {}
+        for m in parsed:
+            if m.window_minutes is not None:
+                key = f"{m.asset}-{m.window_minutes}m"
+                timed[key] = timed.get(key, 0) + 1
+        lines.append(f"newest active markets returned: {len(raw_markets)}   "
+                     f"timed slugs: {', '.join(f'{k} x{v}' for k, v in sorted(timed.items())) or 'none'}")
+        five = [m for m in parsed if m.is_btc() and m.is_five_minute()]
+        lines.append(f"five-minute btc markets in the listing: {len(five)}"
+                     + (f"   e.g. {five[0].slug} window {five[0].starts_at} -> {five[0].ends_at}"
+                        if five else ""))
+        if current is None and not five:
+            lines.append("No five-minute BTC market anywhere; the slug shape may have changed. "
+                         "Read the slugs below and update _SLUG_RE.")
+            for m in parsed[:limit * 3]:
+                lines.append(f"  {m.slug[:60]:<60} {m.question[:60]}")
+    lines.append("")
+
+    # 4. Raw payloads, cut short.
+    subject = current
+    if subject is None and raw_markets:
+        subject = next((PolyMarket.from_payload(r) for r in raw_markets), None)
+    if subject is not None:
+        lines.append("Raw Gamma market:")
+        lines.append(json.dumps(subject.raw, indent=1, default=str)[:6000])
+        if current is not None and current.condition_id:
+            try:
+                lines.append("\nRaw CLOB market:")
+                lines.append(json.dumps(client.clob_market(current.condition_id),
+                                        indent=1, default=str)[:3000])
+            except PolymarketError as exc:
+                lines.append(f"clob market: {exc}")
     return "\n".join(lines)

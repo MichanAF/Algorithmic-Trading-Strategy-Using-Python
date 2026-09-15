@@ -4,8 +4,17 @@ import json
 
 import pytest
 
+from pathlib import Path
+
 from btc5m.cli import PRESETS, _build_config, _coerce, build_parser, main
 from btc5m.config import config_from_dict
+
+CONFIGS = Path(__file__).resolve().parent.parent / "configs"
+
+
+def config_path(name: str) -> str:
+    """A pinned config's path, wherever pytest was started from."""
+    return str(CONFIGS / name)
 
 
 def run(argv, capsys):
@@ -66,7 +75,7 @@ def test_the_fade_config_loads_and_pins_its_hypothesis():
     """The hypothesis under test must not drift with library defaults."""
     from btc5m.config import load_config
 
-    cfg = load_config("configs/fade-5m.json")
+    cfg = load_config(config_path("fade-5m.json"))
     cfg.validate()
     assert cfg.gate_stack == ["data_integrity", "mean_reversion", "session"]
     assert cfg.betting.min_directional_gates == 1
@@ -262,8 +271,8 @@ def test_the_fade_flow_config_loads_and_pins_its_decisions():
     import pytest
     from btc5m.config import load_config, to_dict
 
-    cfg = load_config("configs/fade-flow-5m.json")
-    fade = load_config("configs/fade-5m.json")
+    cfg = load_config(config_path("fade-flow-5m.json"))
+    fade = load_config(config_path("fade-5m.json"))
     assert cfg.gate_stack == ["data_integrity", "mean_reversion", "taker_flow",
                               "session"]
     tf = cfg.gates.taker_flow
@@ -284,19 +293,18 @@ def test_the_sized_config_differs_from_the_fade_flow_config_in_one_value():
     moved from 0.25% to 0.10% of bankroll, nothing else."""
     from btc5m.config import load_config, to_dict
 
-    sized = to_dict(load_config("configs/fade-flow-sized-5m.json"))
-    base = to_dict(load_config("configs/fade-flow-5m.json"))
+    sized = to_dict(load_config(config_path("fade-flow-sized-5m.json")))
+    base = to_dict(load_config(config_path("fade-flow-5m.json")))
     assert sized["risk"]["max_stake_pct"] == 0.001
     assert base["risk"]["max_stake_pct"] == 0.0025
     sized["risk"]["max_stake_pct"] = base["risk"]["max_stake_pct"]
     sized["name"] = base["name"]
     assert sized == base
-    text = cfg_text("configs/fade-flow-sized-5m.json")
+    text = cfg_text(config_path("fade-flow-sized-5m.json"))
     assert "2022-09-13" in text and "+1.0%" in text and "no halt" in text
 
 
-def cfg_text(path: str = "configs/fade-flow-5m.json") -> str:
-    from pathlib import Path
+def cfg_text(path: str = config_path("fade-flow-5m.json")) -> str:
     return Path(path).read_text()
 
 
@@ -304,11 +312,11 @@ def test_the_pooled_config_equals_the_sized_config_in_every_value():
     """The fourth pre-registered config changes the bar, not the strategy."""
     from btc5m.config import load_config, to_dict
 
-    pooled = to_dict(load_config("configs/fade-flow-pooled-5m.json"))
-    sized = to_dict(load_config("configs/fade-flow-sized-5m.json"))
+    pooled = to_dict(load_config(config_path("fade-flow-pooled-5m.json")))
+    sized = to_dict(load_config(config_path("fade-flow-sized-5m.json")))
     pooled["name"] = sized["name"]
     assert pooled == sized
-    text = cfg_text("configs/fade-flow-pooled-5m.json")
+    text = cfg_text(config_path("fade-flow-pooled-5m.json"))
     for needle in ("2021-09-13", "2022-09-13", "2023-09-13", "+1.0%",
                    "2 standard errors", "does not halt", "one time in four"):
         assert needle in text, needle

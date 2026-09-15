@@ -1,11 +1,12 @@
 """Polymarket read-side client. Parsing and error paths only: no network.
 
-Fixtures are shaped like Gamma's ``/markets`` rows, which matters in one
-non-obvious way: the list fields (``outcomes``, ``outcomePrices``,
-``clobTokenIds``) arrive as JSON-encoded *strings*, not lists. A fixture with
-tidy lists would test code the live API never exercises. Field names are still
-guesses until ``btc5m probe --venue polymarket-btc-5m`` has run; what these
-tests pin is that each guess, if right, is read correctly.
+Fixtures are shaped like the live Gamma ``/markets`` row the probe printed on
+2026-09-15, which matters in three non-obvious ways: the list fields
+(``outcomes``, ``outcomePrices``, ``clobTokenIds``) are JSON-encoded *strings*;
+``startDate`` is when the market went live, about a day before its window, so
+the window's start has to come from the slug; and ``orderMinSize`` is a share
+count, not a price. A fixture with tidy lists and a truthful ``startDate``
+would test code the live API never exercises.
 """
 
 import io
@@ -15,33 +16,51 @@ import pytest
 
 from btc5m.polymarket import (CLOB, GAMMA, WINDOW_SECONDS, Book, PolyMarket,
                               PolymarketClient, PolymarketError, _as_bool,
-                              _json_list, probe, window_start)
+                              _json_list, probe, slug_for_window, window_start)
 from btc5m.venue import POLYMARKET_BTC_5M
 
-START = 1_757_675_700                 # 2025-09-12 11:15:00 UTC = 7:15 AM ET
+START = 1_789_481_100                 # 2026-09-15 14:05:00 UTC = 10:05 AM ET
 SLUG = f"btc-updown-5m-{START}"
-UP, DOWN = "1111", "2222"             # CLOB token ids, really 77-digit integers
+LISTED = "2026-09-14T14:13:43.368992Z"   # went live a day before the window
+UP = "48725203892934312879943960580039737032377183552237448650809765374081985392830"
+DOWN = "53386981535633980194149663070564313041423339357501069430757741675992317482769"
+COND = "0x4cd09109b1cb594a514c6a8544920b894a72778108fe90d055c502cefc19e5ad"
 
 
 def market_payload(**over):
-    """An open five-minute BTC up/down market as Gamma lists it."""
-    base = {"id": "12345",
-            "question": "Bitcoin Up or Down - September 12, 7:15AM-7:20AM ET",
-            "slug": SLUG, "conditionId": "0xcond",
+    """A five-minute BTC up/down market as Gamma lists it, live shape."""
+    base = {"id": "4552589",
+            "question": "Bitcoin Up or Down - September 15, 10:05AM-10:10AM ET",
+            "slug": SLUG, "conditionId": COND,
+            "resolutionSource": "https://data.chain.link/streams/btc-usd-twap-60s-streams",
             "outcomes": '["Up", "Down"]',
-            "outcomePrices": '["0.52", "0.48"]',
+            "outcomePrices": '["0.505", "0.495"]',
             "clobTokenIds": f'["{UP}", "{DOWN}"]',
-            "startDate": "2025-09-12T11:15:00Z", "endDate": "2025-09-12T11:20:00Z",
+            "startDate": LISTED, "endDate": "2026-09-15T14:10:00Z",
+            "createdAt": "2026-09-14T14:12:39.553788Z",
             "active": True, "closed": False, "acceptingOrders": True,
-            "bestBid": 0.51, "bestAsk": 0.53,
-            "orderPriceMinTickSize": 0.01, "orderMinSize": 5}
+            "bestAsk": 0.53, "spread": 0.02,
+            "orderPriceMinTickSize": 0.01, "orderMinSize": 5,
+            "makerBaseFee": 1000, "takerBaseFee": 1000,
+            "feesEnabled": True, "feeSchedule": {"kind": "fixture"},
+            "secondsDelay": 3, "clearBookOnStart": True,
+            "negRisk": False, "restricted": True}
     base.update(over)
     return base
 
 
-def book_payload(token, bids, asks, ts="1757675705123"):
+def event_payload(market, **over):
+    base = {"id": "1022968", "ticker": market["slug"], "slug": market["slug"],
+            "title": market["question"], "startDate": market.get("startDate"),
+            "endDate": market.get("endDate"), "active": True, "closed": False,
+            "markets": [market]}
+    base.update(over)
+    return base
+
+
+def book_payload(token, bids, asks, ts="1789481105123"):
     """A CLOB book: prices and sizes are strings, the timestamp is milliseconds."""
-    return {"market": "0xcond", "asset_id": token, "timestamp": ts, "hash": "h",
+    return {"market": COND, "asset_id": token, "timestamp": ts, "hash": "h",
             "bids": [{"price": str(p), "size": str(s)} for p, s in bids],
             "asks": [{"price": str(p), "size": str(s)} for p, s in asks]}
 
@@ -53,35 +72,41 @@ def books():
             DOWN: book_payload(DOWN, bids=[(0.47, 90)], asks=[(0.49, 60), (0.50, 200)])}
 
 
+def clob_market_payload(**over):
+    base = {"condition_id": COND, "question_id": "0xq", "market_slug": SLUG,
+            "end_date_iso": "2026-09-15T14:10:00Z", "game_start_time": None,
+            "seconds_delay": 3, "maker_base_fee": 1000, "taker_base_fee": 1000,
+            "minimum_order_size": 5, "minimum_tick_size": 0.01,
+            "accepting_orders": True, "neg_risk": False, "is_50_50_outcome": False,
+            "enable_order_book": True,
+            "tokens": [{"token_id": UP, "outcome": "Up", "price": 0.53, "winner": False},
+                       {"token_id": DOWN, "outcome": "Down", "price": 0.47, "winner": False}]}
+    base.update(over)
+    return base
+
+
 class Fake(PolymarketClient):
     """Answers from fixtures; records every request it was asked for."""
 
-    def __init__(self, markets=(), events=(), books=None, slug_prefix=None,
-                 reject_order=False):
+    def __init__(self, markets=(), events=(), books=None, clob=None,
+                 reject_order=False, fee_rate=None):
         super().__init__()
         self._markets, self._events = list(markets), list(events)
         self._books = books if books is not None else {}
-        self._slug_prefix = slug_prefix
+        self._clob = clob if clob is not None else {}
         self._reject_order = reject_order
+        self._fee_rate = fee_rate
         self.calls = []
 
     def _get(self, base, path, **params):
         self.calls.append((base, path, params))
         if base == self.gamma_url and path in ("/markets", "/events"):
+            rows = self._markets if path == "/markets" else self._events
             if "slug" in params:
-                slug = params["slug"]
-                rows = [r for r in (self._markets if path == "/markets" else self._events)
-                        if r.get("slug") == slug]
-                if not rows and self._slug_prefix and slug.startswith(self._slug_prefix):
-                    if path == "/markets":
-                        rows = [market_payload(slug=slug)]
-                    else:
-                        rows = [{"slug": slug, "title": "Bitcoin Up or Down",
-                                 "markets": [market_payload(slug=slug)]}]
-                return rows
+                return [r for r in rows if r.get("slug") == params["slug"]]
             if self._reject_order and "order" in params:
                 raise PolymarketError(f"{base} returned 422 for {path}: bad order")
-            return list(self._markets if path == "/markets" else self._events)
+            return list(rows)
         if base == self.clob_url and path == "/book":
             token = params["token_id"]
             if token not in self._books:
@@ -89,7 +114,22 @@ class Fake(PolymarketClient):
             return self._books[token]
         if base == self.clob_url and path == "/midpoint":
             return {"mid": "0.525"}
+        if base == self.clob_url and path.startswith("/markets/"):
+            cid = path.split("/")[-1]
+            if cid not in self._clob:
+                raise PolymarketError(f"{base} returned 404 for {path}: no market")
+            return self._clob[cid]
+        if base == self.clob_url and path == "/fee-rate":
+            if self._fee_rate is None:
+                raise PolymarketError(f"{base} returned 404 for {path}: not found")
+            return self._fee_rate
         raise PolymarketError(f"unexpected request {path} {params}")
+
+
+def fake_with_window(**over):
+    """A client whose /markets?slug= answers for the fixture window."""
+    row = market_payload(**over)
+    return Fake(markets=[row], books=books(), clob={COND: clob_market_payload()})
 
 
 # --------------------------------------------------------------------------- #
@@ -123,6 +163,11 @@ def test_window_start_floors_to_the_five_minute_boundary():
     assert WINDOW_SECONDS == POLYMARKET_BTC_5M.window_seconds
 
 
+def test_the_slug_is_asset_length_and_opening_second():
+    assert slug_for_window(START) == "btc-updown-5m-1789481100"
+    assert slug_for_window(START, asset="eth", minutes=15) == "eth-updown-15m-1789481100"
+
+
 # --------------------------------------------------------------------------- #
 # markets
 # --------------------------------------------------------------------------- #
@@ -130,47 +175,82 @@ def test_window_start_floors_to_the_five_minute_boundary():
 
 def test_a_gamma_market_parses_with_its_encoded_lists():
     m = PolyMarket.from_payload(market_payload())
-    assert m.market_id == "12345" and m.condition_id == "0xcond" and m.slug == SLUG
+    assert m.market_id == "4552589" and m.condition_id == COND and m.slug == SLUG
     assert m.outcomes == ["Up", "Down"]
     assert m.token_ids == [UP, DOWN]
-    assert m.outcome_prices == [pytest.approx(0.52), pytest.approx(0.48)]
+    assert m.outcome_prices == [pytest.approx(0.505), pytest.approx(0.495)]
+    assert m.active and not m.closed and m.accepting_orders
+    assert m.best_ask == pytest.approx(0.53) and m.best_bid is None
+    assert m.tick == pytest.approx(0.01)
+    assert m.min_order == 5.0                       # shares, not scaled as a price
+    assert m.maker_base_fee == 1000.0 and m.taker_base_fee == 1000.0
+    assert m.fees_enabled is True and m.fee_schedule == {"kind": "fixture"}
+    assert m.seconds_delay == 3.0 and m.clear_book_on_start is True
+    assert m.resolution_source.endswith("btc-usd-twap-60s-streams")
+    assert m.raw["id"] == "4552589"
+
+
+def test_the_window_comes_from_the_slug_and_end_date_not_from_start_date():
+    """Gamma's startDate is the listing time, a day early. The slug carries the
+    opening second and endDate the close; startDate is kept only as listed_at."""
+    m = PolyMarket.from_payload(market_payload())
     assert (m.starts_at, m.ends_at) == (START, START + 300)
     assert m.window_seconds == 300 and m.is_five_minute()
-    assert m.is_btc() and m.is_up_down()
-    assert m.active and not m.closed and m.accepting_orders
-    assert m.best_bid == pytest.approx(0.51) and m.best_ask == pytest.approx(0.53)
-    assert m.tick == pytest.approx(0.01) and m.min_order == pytest.approx(0.5)  # 5 read as a price: scaled
-    assert m.raw["id"] == "12345"
+    assert m.asset == "btc" and m.window_minutes == 5
+    assert m.listed_at == START - 86_400 + 523      # 2026-09-14 14:13:43 UTC
+    assert m.created_at == START - 86_400 + 459
+
+
+def test_a_missing_end_date_is_filled_from_the_slug_length():
+    m = PolyMarket.from_payload(market_payload(endDate=None))
+    assert (m.starts_at, m.ends_at) == (START, START + 300)
+    fifteen = PolyMarket.from_payload(market_payload(slug=f"btc-updown-15m-{START}",
+                                                     endDate=None))
+    assert fifteen.window_seconds == 900 and not fifteen.is_five_minute()
+
+
+def test_a_market_without_a_timed_slug_has_no_window_unless_it_declares_a_start():
+    hourly = PolyMarket.from_payload(market_payload(
+        slug="bitcoin-up-or-down-september-17-2026-10am-et",
+        question="Bitcoin Up or Down - September 17, 10AM ET",
+        endDate="2026-09-17T15:00:00Z"))
+    assert hourly.starts_at is None and hourly.ends_at == 1_789_657_200
+    assert hourly.window_seconds is None and not hourly.is_five_minute()
+    assert hourly.is_btc() and hourly.is_up_down()          # by its words
+    declared = PolyMarket.from_payload(market_payload(
+        slug="some-game", gameStartTime="2026-09-15T14:05:00Z"))
+    assert declared.starts_at == START and declared.window_seconds == 300
 
 
 def test_lists_already_decoded_parse_the_same():
     m = PolyMarket.from_payload(market_payload(outcomes=["Up", "Down"],
-                                               outcomePrices=[0.52, 0.48],
+                                               outcomePrices=[0.505, 0.495],
                                                clobTokenIds=[UP, DOWN]))
     assert m.outcomes == ["Up", "Down"] and m.token_ids == [UP, DOWN]
-    assert m.outcome_prices == [pytest.approx(0.52), pytest.approx(0.48)]
+    assert m.outcome_prices == [pytest.approx(0.505), pytest.approx(0.495)]
 
 
 def test_the_filters_reject_what_they_should():
     eth = PolyMarket.from_payload(market_payload(
-        question="Ethereum Up or Down - September 12, 7:15AM-7:20AM ET",
+        question="Ethereum Up or Down - September 15, 10:05AM-10:10AM ET",
         slug=f"eth-updown-5m-{START}"))
     assert not eth.is_btc() and eth.is_up_down() and eth.is_five_minute()
-    fifteen = PolyMarket.from_payload(market_payload(endDate="2025-09-12T11:30:00Z"))
+    fifteen = PolyMarket.from_payload(market_payload(slug=f"btc-updown-15m-{START}",
+                                                     endDate="2026-09-15T14:20:00Z"))
     assert fifteen.is_btc() and fifteen.window_seconds == 900 and not fifteen.is_five_minute()
     level = PolyMarket.from_payload(market_payload(
         question="Will Bitcoin hit $150k in 2025?", slug="will-bitcoin-hit-150k-in-2025",
-        startDate=None, endDate="2025-12-31T23:59:00Z"))
+        endDate="2025-12-31T23:59:00Z"))
     assert level.is_btc() and not level.is_up_down()
     assert level.window_seconds is None and not level.is_five_minute()
 
 
-def test_the_window_falls_back_to_the_event_it_is_nested_in():
-    row = market_payload(startDate=None, endDate=None)
-    row["events"] = [{"slug": SLUG, "startDate": "2025-09-12T11:15:00Z",
-                      "endDate": "2025-09-12T11:20:00Z"}]
+def test_the_end_falls_back_to_the_event_it_is_nested_in():
+    row = market_payload(endDate=None, slug="odd-slug")
+    row["events"] = [{"slug": SLUG, "startDate": LISTED, "endDate": "2026-09-15T14:10:00Z"}]
     m = PolyMarket.from_payload(row)
-    assert (m.starts_at, m.ends_at) == (START, START + 300)
+    assert m.ends_at == START + 300 and m.listed_at == START - 86_400 + 523
+    assert m.starts_at is None                      # no timed slug, no declared start
 
 
 def test_tokens_are_matched_to_sides_by_name():
@@ -186,7 +266,20 @@ def test_open_means_inside_the_window_and_not_closed():
     assert m.is_open(START) and m.is_open(START + 299)
     assert not m.is_open(START - 1) and not m.is_open(START + 300)
     assert not PolyMarket.from_payload(market_payload(closed=True)).is_open(START + 10)
-    assert not PolyMarket.from_payload(market_payload(startDate=None)).is_open(START + 10)
+    assert not PolyMarket.from_payload(market_payload(slug="untimed")).is_open(START + 10)
+
+
+def test_a_settled_market_names_its_winner_from_the_one_and_zero():
+    """Gamma moves outcomePrices to "1" and "0" once resolved; an exact 1 is not
+    a tradable price, so the winner is read from the raw strings."""
+    down = PolyMarket.from_payload(market_payload(closed=True, outcomePrices='["0", "1"]'))
+    assert down.settled_side() == "Down"
+    up = PolyMarket.from_payload(market_payload(closed=True, outcomePrices='["1", "0"]'))
+    assert up.settled_side() == "Up"
+    live = PolyMarket.from_payload(market_payload())
+    assert live.settled_side() is None
+    unclear = PolyMarket.from_payload(market_payload(closed=True, outcomePrices='["0.5", "0.5"]'))
+    assert unclear.settled_side() is None
 
 
 # --------------------------------------------------------------------------- #
@@ -199,23 +292,26 @@ def test_a_clob_book_parses_and_sorts_best_first():
     assert b.token_id == UP
     assert b.bids == [(pytest.approx(0.51), 120.0), (pytest.approx(0.50), 40.0)]
     assert b.asks == [(pytest.approx(0.53), 80.0), (pytest.approx(0.55), 30.0)]
-    assert b.timestamp == 1_757_675_705                 # milliseconds to seconds
+    assert b.timestamp == 1_789_481_105                 # milliseconds to seconds
     assert b.best_bid == pytest.approx(0.51) and b.best_ask == pytest.approx(0.53)
     assert b.mid == pytest.approx(0.52) and b.spread == pytest.approx(0.02)
 
 
-def test_ask_depth_is_the_best_level_unless_a_limit_is_given():
+def test_depth_is_the_best_level_unless_a_limit_is_given():
     b = Book.from_payload(books()[UP])
     assert b.ask_depth() == 80.0
     assert b.ask_depth(up_to=0.55) == 110.0
     assert b.ask_depth(up_to=0.52) == 0.0
+    assert b.bid_depth() == 120.0
+    assert b.bid_depth(down_to=0.50) == 160.0
 
 
 def test_an_empty_or_one_sided_book_is_safe_to_read():
     empty = Book.from_payload({"bids": [], "asks": []}, token_id=UP)
     assert empty.token_id == UP
     assert empty.best_bid is None and empty.best_ask is None
-    assert empty.mid is None and empty.spread is None and empty.ask_depth() == 0.0
+    assert empty.mid is None and empty.spread is None
+    assert empty.ask_depth() == 0.0 and empty.bid_depth() == 0.0
     one_sided = Book.from_payload(book_payload(UP, bids=[(0.5, 10)], asks=[]))
     assert one_sided.best_bid == pytest.approx(0.5) and one_sided.best_ask is None
     assert one_sided.mid is None
@@ -246,79 +342,83 @@ def test_envelopes_are_unwrapped():
 
 def test_the_market_listing_falls_back_when_gamma_rejects_the_ordering():
     client = Fake(markets=[market_payload()], reject_order=True)
-    assert [r["id"] for r in client.markets(limit=5)] == ["12345"]
+    assert [r["id"] for r in client.markets(limit=5)] == ["4552589"]
     ordered, plain = client.calls
     assert ordered[2]["order"] == "startDate" and ordered[2]["ascending"] == "false"
     assert "order" not in plain[2]
     assert plain[2] == {"active": "true", "closed": "false", "limit": 5}
 
 
+def test_a_window_is_found_by_slug_on_the_market_endpoint_first():
+    client = fake_with_window()
+    m = client.market_for_window(START)
+    assert m is not None and m.slug == SLUG and m.starts_at == START
+    assert [c[1] for c in client.calls] == ["/markets"]
+    assert client.calls[0][2] == {"slug": SLUG}
+
+
+def test_a_window_only_the_event_endpoint_knows_is_still_found():
+    nested = market_payload(endDate=None)
+    client = Fake(events=[event_payload(nested)])
+    m = client.market_for_window(START)
+    assert m is not None and (m.starts_at, m.ends_at) == (START, START + 300)
+    assert [c[1] for c in client.calls] == ["/markets", "/events"]
+    assert client.calls[1][2] == {"slug": SLUG}
+
+
+def test_a_window_nobody_listed_is_none_not_an_error():
+    client = fake_with_window()
+    assert client.market_for_window(START + 300) is None
+    assert client.market_for_window(START, asset="eth") is None
+
+
+def test_the_current_window_is_addressed_by_its_boundary():
+    client = fake_with_window()
+    assert client.current_btc_window(now=START).slug == SLUG
+    assert client.current_btc_window(now=START + 299).slug == SLUG
+    assert client.current_btc_window(now=START + 300) is None     # next one not listed
+    assert client.next_btc_window(now=START - 1).slug == SLUG
+
+
+def test_the_current_window_falls_back_to_the_listing_when_the_slug_misses():
+    """If the slug shape changes, a market that is open now and reads as a
+    five-minute BTC window is still found through the listing."""
+    row = market_payload(slug=f"btc-updown-5m-{START}")
+    client = Fake(markets=[row])
+    client.market_for_window = lambda ts, asset="btc", minutes=5: None
+    assert client.current_btc_window(now=START + 30).market_id == "4552589"
+    assert Fake(markets=[]).current_btc_window(now=START + 30) is None
+
+
 def test_only_five_minute_btc_up_down_markets_are_kept_in_start_order():
     later = market_payload(id="later", slug=f"btc-updown-5m-{START + 300}",
-                           startDate="2025-09-12T11:20:00Z", endDate="2025-09-12T11:25:00Z")
+                           endDate="2026-09-15T14:15:00Z")
     client = Fake(markets=[
         later,
-        market_payload(id="eth", question="Ethereum Up or Down", slug="eth-updown-5m-1"),
-        market_payload(id="btc15", endDate="2025-09-12T11:30:00Z"),
+        market_payload(id="eth", question="Ethereum Up or Down", slug=f"eth-updown-5m-{START}"),
+        market_payload(id="btc15", slug=f"btc-updown-15m-{START}",
+                       endDate="2026-09-15T14:20:00Z"),
         market_payload(id="level", question="Will Bitcoin hit $150k?", slug="btc-150k",
-                       startDate=None, endDate="2025-12-31T00:00:00Z"),
+                       endDate="2025-12-31T00:00:00Z"),
         market_payload(id="now"),
     ])
     assert [m.market_id for m in client.btc_five_minute_markets()] == ["now", "later"]
 
 
 def test_the_listing_falls_back_to_events_when_no_market_matches():
-    event = {"slug": SLUG, "title": "Bitcoin Up or Down",
-             "startDate": "2025-09-12T11:15:00Z", "endDate": "2025-09-12T11:20:00Z",
-             "markets": [market_payload(startDate=None, endDate=None)]}
+    nested = market_payload(endDate=None)
     client = Fake(markets=[market_payload(id="level", question="Will Bitcoin hit $150k?",
-                                          slug="btc-150k", startDate=None,
-                                          endDate="2025-12-31T00:00:00Z")],
-                  events=[event])
+                                          slug="btc-150k", endDate="2025-12-31T00:00:00Z")],
+                  events=[event_payload(nested)])
     found = client.btc_five_minute_markets()
-    assert [m.market_id for m in found] == ["12345"]
-    assert found[0].window_seconds == 300          # the window came from the event
+    assert [m.market_id for m in found] == ["4552589"]
+    assert found[0].window_seconds == 300          # the end came from the event
     assert [c[1] for c in client.calls] == ["/markets", "/events"]
 
 
-def test_the_current_window_is_the_open_one_or_the_one_about_to_open():
-    past = market_payload(id="past", slug="btc-updown-5m-past",
-                          startDate="2025-09-12T11:10:00Z", endDate="2025-09-12T11:15:00Z")
-    nxt = market_payload(id="next", slug="btc-updown-5m-next",
-                         startDate="2025-09-12T11:20:00Z", endDate="2025-09-12T11:25:00Z")
-    client = Fake(markets=[past, market_payload(id="now"), nxt])
-    assert client.current_btc_window(now=START + 30).market_id == "now"
-    assert client.current_btc_window(now=START + 299).market_id == "now"
-    assert client.current_btc_window(now=START + 300).market_id == "next"
-    # Ten seconds before the window opens the next one is already the answer.
-    client = Fake(markets=[past, nxt])
-    assert client.current_btc_window(now=START + 290).market_id == "next"
-
-
-def test_the_current_window_is_addressed_by_slug_when_the_listing_misses_it():
-    client = Fake(markets=[], slug_prefix="btc-updown-5m-")
-    m = client.current_btc_window(now=START + 30)
-    assert m is not None and m.slug == SLUG and m.is_open(START + 30)
-    guessed = [c[2]["slug"] for c in client.calls if "slug" in c[2]]
-    assert guessed[0] == SLUG                       # the first guess is the one that answered
-    # Nothing at all answers: None, not an exception, not a stale market.
-    assert Fake(markets=[]).current_btc_window(now=START + 30) is None
-
-
-def test_slug_guesses_report_which_shape_and_endpoint_answered():
-    client = Fake(markets=[market_payload()], events=[
-        {"slug": f"bitcoin-up-or-down-5m-{START}", "title": "Bitcoin Up or Down",
-         "markets": [market_payload(id="from-event")]}])
-    hits = client.markets_by_slug_guess(START)
-    assert [(slug, via, m.market_id) for slug, via, m in hits] == [
-        (SLUG, "markets", "12345"),
-        (f"bitcoin-up-or-down-5m-{START}", "events", "from-event")]
-    assert client.markets_by_slug_guess(START + 300) == []
-
-
 def test_a_quote_prices_each_side_at_its_ask():
-    client = Fake(books=books())
-    market = PolyMarket.from_payload(market_payload())
+    client = fake_with_window()
+    market = client.market_for_window(START)
     quote, up, down = client.quote(market, observed_ts=START + 5)
     assert quote.window_start_ts == START and quote.observed_ts == START + 5
     assert quote.up_price == pytest.approx(0.53) and quote.down_price == pytest.approx(0.49)
@@ -332,15 +432,20 @@ def test_a_quote_refuses_a_market_it_cannot_price():
     with pytest.raises(PolymarketError, match="not Up/Down"):
         client.quote(PolyMarket.from_payload(market_payload(outcomes='["Yes", "No"]')))
     with pytest.raises(PolymarketError, match="no start time"):
-        client.quote(PolyMarket.from_payload(market_payload(startDate=None)))
+        client.quote(PolyMarket.from_payload(market_payload(slug="untimed")))
     thin = books()
     thin[DOWN]["asks"] = []
     with pytest.raises(PolymarketError, match="no asks"):
         Fake(books=thin).quote(PolyMarket.from_payload(market_payload()))
 
 
-def test_the_midpoint_endpoint_is_read_as_a_price():
-    assert Fake().midpoint(UP) == pytest.approx(0.525)
+def test_the_clob_market_record_and_midpoint_are_read():
+    client = fake_with_window()
+    record = client.clob_market(COND)
+    assert record["taker_base_fee"] == 1000 and record["tokens"][0]["outcome"] == "Up"
+    assert client.midpoint(UP) == pytest.approx(0.525)
+    with pytest.raises(PolymarketError, match="404"):
+        client.clob_market("0xnothing")
 
 
 def test_http_errors_name_the_host_and_code(monkeypatch):
@@ -386,43 +491,53 @@ def test_requests_carry_the_query_and_no_key(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_probe_shows_a_parsed_market_and_both_books_when_the_shape_matches(monkeypatch):
-    monkeypatch.setattr(PolyMarket, "is_open", lambda self, now=None: True)
-    client = Fake(markets=[market_payload()], books=books())
+def test_probe_shows_the_current_window_its_books_and_the_clob_record(monkeypatch):
+    monkeypatch.setattr("btc5m.polymarket.window_start", lambda now, seconds=300: START)
+    client = fake_with_window()
     text = probe(client, limit=3)
-    assert "newest active markets returned: 1" in text
-    assert "5min x1" in text
-    assert "btc: 1   btc up/down: 1   five-minute btc up/down: 1" in text
-    assert f"window    {START} -> {START + 300} (300s)" in text
-    assert "outcomes  ['Up', 'Down']" in text
+    assert f"slug {SLUG}" in text
+    assert "current window (" in text and f"window    {START} -> {START + 300} (300s)" in text
+    assert "min order 5.0" in text and "fees      maker 1000.0 taker 1000.0" in text
+    assert "secondsDelay 3.0   clearBookOnStart True" in text
     assert "Up     bid 0.51 ask 0.53 mid 0.52" in text
     assert "Down   bid 0.47 ask 0.49" in text
     assert "book keys ['asks', 'asset_id', 'bids', 'hash', 'market', 'timestamp']" in text
-    assert "Raw first matching market" in text and '"clobTokenIds"' in text
-    assert "No five-minute BTC up/down market matched" not in text
+    assert '"taker_base_fee": 1000' in text and '"outcome": "Up"' in text
+    assert "fee-rate  " in text and "404" in text            # the endpoint guess, reported
+    assert f"next window {START + 300}: not listed" in text
+    assert "Raw Gamma market:" in text and '"clobTokenIds"' in text
+    assert "Raw CLOB market:" in text
 
 
-def test_probe_reports_the_slug_guesses_and_the_events_fallback():
+def test_probe_reports_a_settled_neighbour():
+    settled = market_payload(id="prev", slug=f"btc-updown-5m-{START - 300}",
+                             endDate="2026-09-15T14:05:00Z", closed=True,
+                             outcomePrices='["0", "1"]', umaResolutionStatuses='["resolved"]')
+    client = Fake(markets=[market_payload(), settled], books=books(),
+                  clob={COND: clob_market_payload()})
+    import btc5m.polymarket as pm
+    real = pm.window_start
+    pm.window_start = lambda now, seconds=300: START
+    try:
+        text = probe(client)
+    finally:
+        pm.window_start = real
+    assert f"previous window {START - 300}: btc-updown-5m-{START - 300}   closed True" in text
+    assert "settled Down" in text and 'uma "[\\"resolved\\"]"' in text
+
+
+def test_probe_says_when_nothing_answers_and_shows_the_listing(monkeypatch):
+    monkeypatch.setattr("btc5m.polymarket.window_start", lambda now, seconds=300: START)
     client = Fake(markets=[market_payload(id="level", question="Will Bitcoin hit $150k?",
-                                          slug="btc-150k", startDate=None,
-                                          endDate="2025-12-31T00:00:00Z")],
-                  events=[{"slug": "some-event", "title": "Something else", "markets": []}])
+                                          slug="btc-150k", endDate="2025-12-31T00:00:00Z"),
+                           market_payload(id="sol", slug=f"sol-updown-5m-{START + 86_400}")])
     text = probe(client, limit=2)
-    assert "five-minute btc up/down: 0" in text
-    assert "no candidate slug answered (btc-updown-5m-" in text
-    assert "newest active events returned: 1" in text
-    assert "event  Something else" in text
-    assert "widen _UP_DOWN_WORDS" in text
-    assert "order book for" not in text
-
-
-def test_probe_uses_a_slug_hit_when_the_listing_has_nothing():
-    client = Fake(markets=[], books=books(), slug_prefix="btc-updown-5m-")
-    text = probe(client)
-    assert "newest active markets returned: 0" in text
-    assert "HIT btc-updown-5m-" in text and "via /markets" in text
-    assert "order book for btc-updown-5m-" in text
-    assert "ask 0.53" in text
+    assert "current window: nothing at that slug" in text
+    assert "timed slugs: sol-5m x1" in text
+    assert "five-minute btc markets in the listing: 0" in text
+    assert "update _SLUG_RE" in text
+    assert "  btc-150k" in text
+    assert "Raw Gamma market:" in text and "Raw CLOB market:" not in text
 
 
 def test_probe_reports_an_unreachable_api_rather_than_crashing():
@@ -430,7 +545,7 @@ def test_probe_reports_an_unreachable_api_rather_than_crashing():
         def _get(self, base, path, **params):
             raise PolymarketError("could not reach gamma")
     text = probe(Down())
-    assert text.endswith("markets: could not reach gamma")
+    assert text.endswith("current window: could not reach gamma")
 
 
 # --------------------------------------------------------------------------- #
