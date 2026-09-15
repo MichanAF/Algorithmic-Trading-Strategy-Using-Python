@@ -1,0 +1,78 @@
+# Read Polymarket's public APIs from a runner that can reach them, and print
+# what they actually return.  The sandbox this repository is developed from
+# cannot reach gamma-api.polymarket.com or clob.polymarket.com, so the field
+# names in btc5m/polymarket.py are guesses until this log has been read, as
+# predict.fun's were until its testnet probe ran.
+#
+# Read only.  No API key, no wallet, no order endpoint: both hosts answer
+# unauthenticated GETs and nothing here can move money.  Nothing here is a
+# test either; the log and the raw payloads are the deliverable.
+
+name: Polymarket probe
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/btc5m/polymarket.py'
+      - '.github/workflows/polymarket-probe.yml'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: markets to print in full
+        default: "5"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # On a push event inputs.limit is empty, so the shell supplies the default.
+      - name: Probe the public APIs
+        env:
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          python -m btc5m probe --venue polymarket-btc-5m --limit "${LIMIT:-5}" 2>&1 | tee probe.log
+          test ${PIPESTATUS[0]} -eq 0
+
+      # Straight from curl, so the shape is on record independently of the
+      # module's guesses.  Each response is cut at a few thousand bytes.
+      - name: Raw payloads, for the record
+        if: always()
+        run: |
+          ts=$(( $(date +%s) / 300 * 300 ))
+          show () { echo; echo "== $1"; curl -sS --max-time 20 "$1" | head -c 2500; echo; }
+          show "https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-$ts"
+          show "https://gamma-api.polymarket.com/events?slug=btc-updown-5m-$ts"
+          show "https://gamma-api.polymarket.com/public-search?q=bitcoin%20up%20or%20down&limit_per_type=5"
+          show "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=2&order=startDate&ascending=false"
+          show "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=2&order=startDate&ascending=false"
+          show "https://clob.polymarket.com/sampling-simplified-markets"
+
+      - name: Write the summary
+        if: always()
+        run: |
+          {
+            echo "## Polymarket probe: what the public APIs returned"
+            echo
+            echo "Read only, no key. Field names in \`btc5m/polymarket.py\` are corrected from this log."
+            echo
+            echo '```'
+            cat probe.log 2>/dev/null || echo "(no probe.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

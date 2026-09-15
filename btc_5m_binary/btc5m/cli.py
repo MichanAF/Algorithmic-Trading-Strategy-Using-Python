@@ -8,6 +8,7 @@
     python -m btc5m flow     --data btc_5m.csv --minute btc_1m.csv   # does pre-open flow predict?
     python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
     python -m btc5m probe    --testnet                     # see predict.fun's real payload
+    python -m btc5m probe    --venue polymarket-btc-5m    # see Polymarket's real payload
     python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m fetch    --interval 1m --year -o btc_1m.csv      # minute bars for --minute
@@ -32,6 +33,7 @@ from .data import (INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
                    fetch_history, fetch_klines, load_csv, synthetic)
 from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
+from .polymarket import PolymarketClient, probe as probe_polymarket
 from .features import build_features
 from .gates import GATE_REGISTRY
 from .signal import SignalEngine
@@ -430,7 +432,14 @@ def cmd_quote(args) -> int:
 
 
 def cmd_probe(args) -> int:
-    """Print predict.fun's real payload shapes so the field guesses can be fixed."""
+    """Print a venue's real payload shapes so the field guesses can be fixed.
+
+    predict.fun needs a key on mainnet; Polymarket's read side needs nothing.
+    Neither path signs anything.
+    """
+    if args.venue == "polymarket-btc-5m":
+        print(probe_polymarket(PolymarketClient(), limit=args.limit))
+        return 0
     client = PredictFunClient(api_key=args.api_key, testnet=args.testnet)
     print(probe_predictfun(client, limit=args.limit))
     return 0
@@ -678,10 +687,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_quote)
 
-    p = sub.add_parser("probe", help="show predict.fun's real API payload shapes")
+    p = sub.add_parser("probe", help="show a venue's real API payload shapes")
+    p.add_argument("--venue", choices=sorted(VENUES), default="predict-fun-btc-5m",
+                   help="which venue's public API to read (default: predict.fun)")
     p.add_argument("--testnet", action="store_true",
-                   help="use api-testnet.predict.fun, which needs no API key")
-    p.add_argument("--api-key", help="mainnet key; also read from PREDICT_FUN_API_KEY")
+                   help="predict.fun only: use api-testnet.predict.fun, which needs no API key")
+    p.add_argument("--api-key", help="predict.fun mainnet key; also read from PREDICT_FUN_API_KEY")
     p.add_argument("--limit", type=int, default=3)
     p.set_defaults(func=cmd_probe)
 

@@ -1209,6 +1209,35 @@ title. The two look nearly identical in a listing, and a 5-minute signal on a
 so the edge the gates measured over one bar is diluted across three. An unfiltered
 `markets()` call will hand you both.
 
+### Polymarket's read side: a probe, not a confirmed shape
+
+`polymarket.py` is the same idea for the other venue, and it is one step behind:
+its field names have not been checked against a live response yet. Two public
+hosts, both answering unauthenticated GETs, neither able to move money:
+
+| | |
+|---|---|
+| Gamma, `gamma-api.polymarket.com` | what exists: `/markets`, `/events`, each addressable by `slug` |
+| CLOB, `clob.polymarket.com` | what it costs: `/book?token_id=` and `/midpoint?token_id=` |
+| List fields | `outcomes`, `outcomePrices`, `clobTokenIds` arrive as JSON-encoded **strings**; every list is read through a decoder that accepts either form |
+| Window | `startDate` / `endDate` on the market, or on the event it is nested in |
+| Sides | `Up` / `Down` matched by name to the two token ids; a `Yes`/`No` market is refused |
+| Price to buy | the best **ask** on that side's book, as on predict.fun |
+| Finding the window | the newest listing, then the event listing, then the slug shapes `btc-updown-5m-<start ts>` and three variants for the current five-minute boundary |
+
+The sandbox this was written from cannot reach either host, so the check runs on
+a GitHub Actions runner: `.github/workflows/polymarket-probe.yml` runs
+`btc5m probe --venue polymarket-btc-5m`, prints the raw payloads and the slug
+guesses that answered, and puts it all in the job summary. The guesses are
+corrected from that log, and this section is rewritten as a confirmed table
+when they are. Until then treat every field name above as the hypothesis it is.
+
+Where the process runs is a hosting choice, not a venue one. Polymarket's own
+terms and the law where you are apply wherever the server sits, and nothing in
+this repository is built to route around either. The read side needs no key at
+all, so the first thing to deploy is a watcher that only logs what the quote
+was when the gates fired.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
@@ -1316,12 +1345,14 @@ btc5m/
   attribution.py  what each gate and each stack is actually worth
   redundancy.py   whether the gates and conditions overlap, and by how much
   venue.py        live contract quotes, the window clock, gas and sizing
+  predictfun.py   predict.fun read side: markets, books, the probe
+  polymarket.py   Polymarket read side: Gamma metadata, CLOB books, the probe
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            407 tests
+tests/            438 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1331,7 +1362,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 407 passed
+python -m pytest tests/ -q      # 438 passed
 ```
 
 ---
