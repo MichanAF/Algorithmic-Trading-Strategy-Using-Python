@@ -8,6 +8,7 @@ from btc5m.features import build_features
 from btc5m.gates import DOWN, FLAT, UP
 from btc5m.risk import RiskManager
 from btc5m.signal import SignalEngine
+from conftest import config_path, config_paths
 from btc5m.venue import (POLYMARKET_BTC_5M, PREDICT_FUN_BTC_5M, VENUES,
                          TRUST_WALLET_BTC_5M, MarketQuote, VenueRules,
                          evaluate_market, minimum_viable_stake)
@@ -248,7 +249,7 @@ def test_minimum_viable_stake_scales_with_gas_and_shrinks_with_edge():
 # --------------------------------------------------------------------------- #
 
 def test_the_bundled_venue_config_loads_and_prices_a_contract():
-    cfg = load_config("configs/predict-fun-bnb-5m.json")
+    cfg = load_config(config_path("predict-fun-bnb-5m.json"))
     cfg.validate()
     assert cfg.betting.payout_mode == "contract_price"
     assert cfg.betting.tie_policy == "void"
@@ -323,13 +324,13 @@ def test_polymarket_taker_fee_peaks_at_an_even_market():
 
 def test_the_two_fee_layers_agree_at_the_reference_price():
     """config.break_even_probability and VenueRules.fee_per_share must not drift."""
-    cfg = load_config("configs/polymarket-5m.json")
+    cfg = load_config(config_path("polymarket-5m.json"))
     assert cfg.break_even_probability() == pytest.approx(
         POLYMARKET_BTC_5M.effective_price(0.50), abs=1e-9)
 
 
 def test_a_venue_minimum_order_refuses_a_stake_below_it():
-    cfg = load_config("configs/polymarket-5m.json")
+    cfg = load_config(config_path("polymarket-5m.json"))
     series = synthetic(20_000, seed=11)
     fs = build_features(series, cfg)
     engine = SignalEngine(cfg)
@@ -338,7 +339,7 @@ def test_a_venue_minimum_order_refuses_a_stake_below_it():
     signal = engine.evaluate(fs, index)
     window = int(series.ts[index])
     # A bankroll small enough that the capped stake falls under 5 USDC.
-    poor = load_config("configs/polymarket-5m.json")
+    poor = load_config(config_path("polymarket-5m.json"))
     poor.risk.starting_bankroll = 50.0
     poor.risk.min_stake = 0.01
     risk = RiskManager(poor.risk, engine.break_even, engine.odds)
@@ -463,7 +464,7 @@ def test_the_venue_configs_run_three_gates_without_a_volatility_band():
     Measured over 1,042 unseen days, accuracy is the same either side of the
     band. The tail guard lives in risk.atr_shock_rank instead.
     """
-    for path in ("configs/predict-fun-bnb-5m.json", "configs/polymarket-5m.json"):
+    for path in (config_path("predict-fun-bnb-5m.json"), config_path("polymarket-5m.json")):
         cfg = load_config(path)
         assert "volatility_regime" not in cfg.gate_stack, path
         assert cfg.risk.atr_shock_rank < 1.0, path
@@ -472,7 +473,7 @@ def test_the_venue_configs_run_three_gates_without_a_volatility_band():
 
 
 def test_the_volatility_shock_veto_still_works_without_the_gate():
-    cfg = load_config("configs/predict-fun-bnb-5m.json")
+    cfg = load_config(config_path("predict-fun-bnb-5m.json"))
     risk = RiskManager(cfg.risk, cfg.break_even_probability(), cfg.payoff_odds())
     calm = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.5)
     shock = risk.assess(bar_index=1, ts=WINDOW, p_model=0.60, atr_rank=0.999)
@@ -495,13 +496,31 @@ def test_configs_may_carry_underscore_notes(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_every_bundled_config_declares_a_known_venue():
-    import glob
-    paths = sorted(glob.glob("configs/*.json"))
+    paths = config_paths()
     assert paths
     for path in paths:
         cfg = load_config(path)
         cfg.validate()
         assert cfg.venue in VENUES, path
+
+
+def test_no_test_opens_a_config_by_a_relative_path():
+    """`pytest tests/` from the repository root once failed five venue tests on
+    a missing configs/ directory, which reads as a code fault and is not one.
+    Every test reaches the bundled configs through conftest's helper, so the
+    suite is indifferent to the directory it was started from."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    # Built rather than written out, so this test does not match its own source.
+    needles = (chr(34) + "configs" + "/", chr(39) + "configs" + "/")
+    offenders = []
+    for path in sorted(here.glob("test_*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if any(n in line for n in needles):
+                offenders.append(f"{path.name}:{number}: {line.strip()}")
+    assert not offenders, ("use conftest.config_path(...) instead:\n"
+                           + "\n".join(offenders))
 
 
 def test_an_unknown_venue_is_rejected():
@@ -510,8 +529,8 @@ def test_an_unknown_venue_is_rejected():
 
 
 def test_the_venue_configs_point_at_their_own_venue():
-    assert load_config("configs/polymarket-5m.json").venue == "polymarket-btc-5m"
-    assert load_config("configs/predict-fun-bnb-5m.json").venue == "predict-fun-btc-5m"
+    assert load_config(config_path("polymarket-5m.json")).venue == "polymarket-btc-5m"
+    assert load_config(config_path("predict-fun-bnb-5m.json")).venue == "predict-fun-btc-5m"
 
 
 def test_each_venue_prices_the_same_quote_with_its_own_fee_schedule(rig):
@@ -520,9 +539,9 @@ def test_each_venue_prices_the_same_quote_with_its_own_fee_schedule(rig):
     signal = engine.evaluate(fs, index)
     window = int(fs.series.ts[index])
     quote = priced_for(signal.side, 0.49, window=window)
-    on_pf = evaluate_market(signal, quote, load_config("configs/predict-fun-bnb-5m.json"),
+    on_pf = evaluate_market(signal, quote, load_config(config_path("predict-fun-bnb-5m.json")),
                             rules=PREDICT_FUN_BTC_5M)
-    on_poly = evaluate_market(signal, quote, load_config("configs/polymarket-5m.json"),
+    on_poly = evaluate_market(signal, quote, load_config(config_path("polymarket-5m.json")),
                               rules=POLYMARKET_BTC_5M)
     assert on_poly.price == pytest.approx(0.49 + POLYMARKET_BTC_5M.fee_per_share(0.49))
     assert on_pf.price == pytest.approx(0.49 + 0.02)

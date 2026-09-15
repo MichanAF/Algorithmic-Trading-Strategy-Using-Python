@@ -6,15 +6,10 @@ import pytest
 
 from pathlib import Path
 
+from conftest import config_path
+
 from btc5m.cli import PRESETS, _build_config, _coerce, build_parser, main
 from btc5m.config import config_from_dict
-
-CONFIGS = Path(__file__).resolve().parent.parent / "configs"
-
-
-def config_path(name: str) -> str:
-    """A pinned config's path, wherever pytest was started from."""
-    return str(CONFIGS / name)
 
 
 def run(argv, capsys):
