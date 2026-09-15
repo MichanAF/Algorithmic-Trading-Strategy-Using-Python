@@ -1331,6 +1331,36 @@ question. Accumulating enough windows to answer the second is what a small
 always-on box is for, and the quote question is the one that can end the project
 in an afternoon.
 
+### Running it on a box, which is a read-only service
+
+`deploy/` holds the whole recipe: a Dockerfile, three systemd units and a
+[runbook](deploy/README.md). What it deploys is one process that reads two
+public APIs and appends a CSV. It holds no key, signs nothing, and there is no
+order path in this repository for it to reach, so the security posture is short:
+no inbound ports at all, outbound 443, an unprivileged user, and one writable
+directory.
+
+`--windows 0` runs until something stops it, which on a box is systemd.
+
+**The clock is the load-bearing part.** Windows start on five-minute boundaries,
+the entry budget is 30 seconds, and the watcher records the book at +5, +15 and
++30 seconds. A clock ten seconds slow produces no error and no warning: it
+produces a file full of readings that claim an offset they were not taken at,
+and nothing downstream can detect it. So the unit starts after `chronyd`, and
+the runbook's first check is `chronyc tracking`. On EC2 the region provides a
+clock at 169.254.169.123; confirm it rather than assume it.
+
+Everything in `deploy/` is checked against the code it claims to run:
+`tests/test_deploy.py` parses every `ExecStart` and the Dockerfile's `CMD` with
+the real argument parser, so a renamed flag fails the suite instead of quietly
+producing an empty CSV on a box nobody is watching. It also asserts what is not
+there: no unit carries an `Environment=` line, and no deployment file contains
+anything key-shaped.
+
+Where the box sits is a hosting choice and nothing more. Polymarket's own terms
+and the law where you are apply wherever the server is, and nothing here is
+built to route around either.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
@@ -1448,7 +1478,8 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            483 tests
+deploy/           Dockerfile, systemd units and the runbook for a small box
+tests/            496 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1458,7 +1489,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 483 passed
+python -m pytest tests/ -q      # 496 passed
 ```
 
 ---

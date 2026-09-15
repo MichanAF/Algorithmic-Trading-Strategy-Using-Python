@@ -177,6 +177,25 @@ def test_the_market_and_the_bars_are_fetched_once_per_window(tmp_path):
     assert len(client.book_calls) == 6                 # both sides, every offset
 
 
+def test_zero_windows_watches_until_it_is_stopped(tmp_path):
+    """The always-on case: no count ends it, so something else must. Here the
+    bar feed raises after the third window and stands in for SIGTERM."""
+    markets = {START + 300 * k: FakeMarket(START + 300 * k) for k in range(4)}
+    calls = {"n": 0}
+
+    def feed():
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise KeyboardInterrupt
+        return bars()
+
+    w, _ = watcher(tmp_path, client=FakeClient(markets=markets), feed=feed)
+    with pytest.raises(KeyboardInterrupt):
+        w.run(windows=0)
+    assert w.rows == 9                                 # three windows, three offsets
+    assert len({r["window_start"] for r in read_rows(w.out)}) == 3
+
+
 def test_offsets_are_validated(tmp_path):
     with pytest.raises(ValueError, match="inside the window"):
         watcher(tmp_path, offsets=(5, 300))

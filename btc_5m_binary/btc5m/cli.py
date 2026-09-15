@@ -562,7 +562,8 @@ def cmd_watch(args) -> int:
         print(f"          note: the config names {cfg.venue}, and its break-even "
               f"is the one the gates are judged against here.")
     print(f"writing   {args.out}")
-    print(f"windows   {args.windows}  (about {args.windows * 5} minutes)")
+    print("windows   until stopped" if args.windows == 0 else
+          f"windows   {args.windows}  (about {args.windows * 5} minutes)")
     print()
     rows = watcher.run(windows=args.windows)
     print()
@@ -803,7 +804,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--venue", choices=sorted(VENUES), default=None,
                    help="override the venue the config names (must be Polymarket)")
     p.add_argument("--windows", type=int, default=12,
-                   help="how many five-minute windows to watch (default: 12, an hour)")
+                   help="how many five-minute windows to watch "
+                        "(default: 12, an hour; 0 watches until stopped)")
     p.add_argument("--offsets", default=",".join(str(o) for o in DEFAULT_OFFSETS),
                    metavar="S,S,S",
                    help="seconds into each window to read the book "

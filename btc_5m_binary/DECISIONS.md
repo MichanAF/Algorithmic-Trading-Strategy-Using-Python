@@ -479,3 +479,42 @@ watcher falls back to it and says so.
 An hour of windows is twelve bets, a standard error of about 14 points on
 any hit rate. It answers the quote question, not the edge question, and
 the quote question is the one that can end this in an afternoon.
+
+### Where it runs: a small AWS box in me-central-1
+
+Chosen by the user: the UAE region, for proximity and a network they
+trust to stay up. Options not taken: a US or EU region (further away, and
+no bearing on the venue's rules); a laptop (a watcher that sleeps when
+the lid closes measures nothing overnight, which is half the windows).
+
+What is deployed is a read-only service and nothing else. `deploy/` has a
+Dockerfile, a watch unit, a settle unit and timer, and a runbook. No
+inbound ports, outbound 443, an unprivileged user, one writable
+directory, no `Environment=` line in any unit, and no credential anywhere
+in the directory -- because the read side needs none and this repository
+still has no signer in it.
+
+The clock is the load-bearing part, and the one failure with no
+symptom: windows start on five-minute boundaries and the watcher records
+the book at +5, +15 and +30 seconds, so a clock ten seconds slow writes
+rows that claim an offset they were not read at. The unit starts after
+chronyd and the runbook's first check is `chronyc tracking`.
+
+`deploy/` is tested against the code it claims to run: every ExecStart
+and the Dockerfile's CMD are parsed with the real argument parser, so a
+renamed flag fails the suite rather than silently producing an empty CSV
+on a box nobody is watching.
+
+Where the box sits is a hosting choice. Polymarket's own terms and the
+law where the user is apply wherever the server is, and nothing here is
+built to route around either.
+
+The order of what comes next is fixed by what can end the project
+soonest, not by what is most interesting to build:
+
+1. The quote question, which the watcher now answers.
+2. Settlement: Polymarket resolves on Chainlink's 60-second TWAP at each
+   end of the window; every backtest here settles on Binance
+   close-to-close. Measurable from the minute bars already fetched.
+3. Only then a signer, in a separate hot wallet, keyed by a session key
+   rather than the wallet's own key, with nothing in git.

@@ -181,10 +181,15 @@ class Watcher:
     # -- the session ----------------------------------------------------- #
 
     def run(self, windows: int = 1) -> int:
-        """Watch ``windows`` windows and return how many rows were written."""
+        """Watch ``windows`` windows and return how many rows were written.
+
+        ``windows=0`` never returns: that is the always-on case, where the
+        process is stopped by whatever supervises it rather than by a count.
+        """
+        forever = windows == 0
         seen = 0
         done: int | None = None          # the window whose readings are finished
-        while seen < windows:
+        while forever or seen < windows:
             start = window_start(int(self.now()))
             # The last reading of a window lands on its own boundary second, so
             # without this the loop would read that offset again and again.

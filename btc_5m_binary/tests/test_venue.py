@@ -514,10 +514,13 @@ def test_no_test_opens_a_config_by_a_relative_path():
     here = Path(__file__).resolve().parent
     # Built rather than written out, so this test does not match its own source.
     needles = (chr(34) + "configs" + "/", chr(39) + "configs" + "/")
+    # Only a line that *reads* the path is a fault.  A test may name a config in
+    # an assertion about a deployment file's text without opening anything.
+    readers = ("load_config", "open(", "Path(", "read_text", "glob(", "loads(")
     offenders = []
     for path in sorted(here.glob("test_*.py")):
         for number, line in enumerate(path.read_text().splitlines(), 1):
-            if any(n in line for n in needles):
+            if any(n in line for n in needles) and any(r in line for r in readers):
                 offenders.append(f"{path.name}:{number}: {line.strip()}")
     assert not offenders, ("use conftest.config_path(...) instead:\n"
                            + "\n".join(offenders))
