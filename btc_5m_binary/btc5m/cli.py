@@ -9,6 +9,9 @@
     python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
     python -m btc5m probe    --testnet                     # see predict.fun's real payload
     python -m btc5m probe    --venue polymarket-btc-5m    # see Polymarket's real payload
+    python -m btc5m watch    --windows 12 --out quotes.csv  # log the live quote, no orders
+    python -m btc5m settle   --quotes quotes.csv           # fill in who won
+    python -m btc5m report   --quotes quotes.csv           # was the market ever near even?
     python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m fetch    --interval 1m --year -o btc_1m.csv      # minute bars for --minute
@@ -31,9 +34,12 @@ from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
 from .data import (INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
                    fetch_history, fetch_klines, load_csv, synthetic)
-from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
+from .venue import (POLYMARKET_BTC_5M, VENUES, MarketQuote, evaluate_market,
+                    minimum_viable_stake)
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .polymarket import PolymarketClient, probe as probe_polymarket
+from .watch import (DEFAULT_OFFSETS, Watcher, read_rows, render_report,
+                    settle as settle_quotes)
 from .features import build_features
 from .gates import GATE_REGISTRY
 from .signal import SignalEngine
@@ -67,8 +73,11 @@ PRESETS: dict[str, list[str]] = {
 def _add_data_args(p: argparse.ArgumentParser, reference: bool = True) -> None:
     src = p.add_argument_group("data source (pick one)")
     src.add_argument("--data", metavar="CSV", help="5-minute OHLCV CSV file")
-    src.add_argument("--exchange", choices=("binance", "coinbase", "kraken"),
-                     help="fetch recent closed 5m candles live")
+    src.add_argument("--exchange",
+                     choices=("binance", "binance-vision", "coinbase", "kraken"),
+                     help="fetch recent closed 5m candles live "
+                          "(binance-vision is Binance's public mirror, which "
+                          "answers where api.binance.com is geo-blocked)")
     src.add_argument("--symbol", help="exchange symbol override")
     src.add_argument("--limit", type=int, default=1000,
                      help="candles to fetch (default: 1000)")
@@ -489,6 +498,97 @@ def cmd_live(args) -> int:
     return 0
 
 
+def _bar_feed(args):
+    """A callable returning the freshest bars, for the watcher to call per window.
+
+    A CSV is read once and reused, which is right for a dry run and wrong for a
+    live session, so it says so.  A live feed is refetched every window, and
+    Binance's mirror stands in for the main host when that is geo-blocked --
+    which it is from most cloud regions, and which would otherwise leave the
+    flow gate with no taker volume at all.
+    """
+    if getattr(args, "data", None):
+        series = load_csv(args.data)
+        print(f"bars      {args.data}: {len(series):,} static bars, last "
+              f"{series.time_at(len(series) - 1):%Y-%m-%d %H:%M} UTC")
+        print("          (a file does not refresh; every window will read the "
+              "same last bar. Use --exchange for a live session.)")
+        return lambda: series
+
+    wanted = getattr(args, "exchange", None) or "binance"
+    chain = [wanted] + (["binance-vision"] if wanted == "binance" else [])
+    state = {"host": None}
+
+    def feed():
+        errors = []
+        for host in ([state["host"]] if state["host"] else chain):
+            try:
+                series = fetch_klines(host, args.symbol, args.limit)
+            except (RuntimeError, ValueError) as exc:
+                errors.append(f"{host}: {exc}")
+                continue
+            if state["host"] != host:
+                print(f"bars      {host}: {len(series):,} bars, last "
+                      f"{series.time_at(len(series) - 1):%Y-%m-%d %H:%M} UTC")
+                state["host"] = host
+            return series
+        state["host"] = None
+        raise RuntimeError("; ".join(errors))
+
+    return feed
+
+
+def cmd_watch(args) -> int:
+    """Log what the book offered when the gates fired.  Reads only; no orders."""
+    cfg = _build_config(args)
+    venue = args.venue or cfg.venue
+    rules = VENUES[venue]
+    if rules is not POLYMARKET_BTC_5M:
+        raise SystemExit(
+            f"watch reads Polymarket's public API, and the venue here is {venue}. "
+            "Pass --venue polymarket-btc-5m, or a config that names it.")
+    offsets = tuple(int(x) for x in args.offsets.split(",") if x.strip())
+    watcher = Watcher(PolymarketClient(), cfg, _bar_feed(args), out=args.out,
+                      offsets=offsets, rules=rules, reference=_load_reference(args))
+    print(f"venue     {rules.name}   offsets {', '.join(f'+{o}s' for o in offsets)}")
+    # The engine's break-even comes from the config's fee basis and the price
+    # paid comes from the venue's own fee, so a mismatch is worth naming: it
+    # changes which bars count as "the gates fired".  The config is not
+    # rewritten -- several of them are pre-registered and must not be.
+    print(f"break-even {cfg.break_even_probability():.4f} from the config; "
+          f"the book is charged {rules.name}'s own fee "
+          f"({rules.fee_per_share(0.5):.4f} a share at 0.50)")
+    if venue != cfg.venue:
+        print(f"          note: the config names {cfg.venue}, and its break-even "
+              f"is the one the gates are judged against here.")
+    print(f"writing   {args.out}")
+    print(f"windows   {args.windows}  (about {args.windows * 5} minutes)")
+    print()
+    rows = watcher.run(windows=args.windows)
+    print()
+    print(f"{rows} rows written to {args.out}. "
+          f"`btc5m settle --quotes {args.out}` once the windows have ended.")
+    return 0
+
+
+def cmd_settle(args) -> int:
+    """Fill in who won, for windows that have ended."""
+    filled, left = settle_quotes(PolymarketClient(), args.quotes)
+    print(f"settled {filled} window(s); {left} ended window(s) still unresolved "
+          f"at the venue")
+    return 0
+
+
+def cmd_report(args) -> int:
+    """What the quote was when the gates fired, and what it would have paid."""
+    rows = read_rows(args.quotes)
+    break_even = None
+    if getattr(args, "config", None) or getattr(args, "set", None):
+        break_even = _build_config(args).break_even_probability()
+    print(render_report(rows, break_even=break_even))
+    return 0
+
+
 def _parse_end(text: str) -> datetime:
     """A --end date, read as midnight UTC on that day.
 
@@ -695,6 +795,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--api-key", help="predict.fun mainnet key; also read from PREDICT_FUN_API_KEY")
     p.add_argument("--limit", type=int, default=3)
     p.set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("watch", help="log the live quote when the gates fire "
+                                     "(reads only, places nothing)")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--venue", choices=sorted(VENUES), default=None,
+                   help="override the venue the config names (must be Polymarket)")
+    p.add_argument("--windows", type=int, default=12,
+                   help="how many five-minute windows to watch (default: 12, an hour)")
+    p.add_argument("--offsets", default=",".join(str(o) for o in DEFAULT_OFFSETS),
+                   metavar="S,S,S",
+                   help="seconds into each window to read the book "
+                        f"(default: {','.join(str(o) for o in DEFAULT_OFFSETS)})")
+    p.add_argument("--out", default="quotes.csv", metavar="CSV",
+                   help="append observations here (default: quotes.csv)")
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("settle", help="fill in who won, for windows that ended")
+    p.add_argument("--quotes", required=True, metavar="CSV",
+                   help="a CSV written by `btc5m watch`")
+    p.set_defaults(func=cmd_settle)
+
+    p = sub.add_parser("report", help="was the market near even when the gates fired?")
+    p.add_argument("--quotes", required=True, metavar="CSV",
+                   help="a CSV written by `btc5m watch`")
+    _add_config_args(p)
+    p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("live", help="price the open predict.fun window")
     _add_data_args(p)

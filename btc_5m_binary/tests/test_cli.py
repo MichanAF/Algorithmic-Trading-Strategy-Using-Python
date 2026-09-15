@@ -320,3 +320,151 @@ def test_the_pooled_config_equals_the_sized_config_in_every_value():
     for needle in ("2021-09-13", "2022-09-13", "2023-09-13", "+1.0%",
                    "2 standard errors", "does not halt", "one time in four"):
         assert needle in text, needle
+
+
+# --------------------------------------------------------------------------- #
+# the live quote watcher
+# --------------------------------------------------------------------------- #
+
+
+def test_watch_refuses_a_venue_it_cannot_read(capsys):
+    """The watcher reads Polymarket's public API. Pointed at the other venue it
+    says so, rather than quietly watching nothing."""
+    with pytest.raises(SystemExit, match="the venue here is predict-fun-btc-5m"):
+        main(["watch", "--venue", "predict-fun-btc-5m", "--synthetic", "500"])
+    # The default config names predict.fun, so a bare run is refused too.
+    with pytest.raises(SystemExit, match="Pass --venue polymarket-btc-5m"):
+        main(["watch", "--synthetic", "500"])
+
+
+def test_watch_wires_the_offsets_the_output_and_the_config(monkeypatch, capsys, tmp_path):
+    import btc5m.cli as cli
+
+    seen = {}
+
+    class FakeWatcher:
+        def __init__(self, client, cfg, feed, **kw):
+            seen.update(kw)
+            seen["cfg"] = cfg
+            seen["feed"] = feed
+            seen["client"] = type(client).__name__
+
+        def run(self, windows=1):
+            seen["windows"] = windows
+            return 3 * windows
+
+    monkeypatch.setattr(cli, "Watcher", FakeWatcher)
+    monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
+    out = tmp_path / "q.csv"
+    code, printed = run(["watch", "--synthetic", "500", "--windows", "4",
+                         "--venue", "polymarket-btc-5m",
+                         "--offsets", "3,20", "--out", str(out)], capsys)
+    assert code == 0
+    assert seen["offsets"] == (3, 20)
+    assert str(seen["out"]) == str(out)
+    assert seen["windows"] == 4
+    assert seen["rules"].name == "polymarket-btc-5m"
+    assert "12 rows written" in printed.out
+    assert "+3s, +20s" in printed.out
+    # The config here is the default, which names the other venue: the run says
+    # so instead of silently judging the gates against the wrong break-even.
+    assert seen["cfg"].venue == "predict-fun-btc-5m"
+    assert "the config names predict-fun-btc-5m" in printed.out
+    assert "break-even 0.5263 from the config" in printed.out   # the built-in default
+    assert "0.0175 a share at 0.50" in printed.out
+
+
+def test_watch_takes_the_venue_from_the_config_when_it_names_polymarket(monkeypatch,
+                                                                        capsys, tmp_path):
+    import btc5m.cli as cli
+
+    class FakeWatcher:
+        def __init__(self, *a, **kw):
+            self.rules = kw["rules"]
+
+        def run(self, windows=1):
+            return 0
+
+    monkeypatch.setattr(cli, "Watcher", FakeWatcher)
+    monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
+    code, printed = run(["watch", "--synthetic", "500", "--windows", "1",
+                         "--config", config_path("polymarket-5m.json"),
+                         "--out", str(tmp_path / "q.csv")], capsys)
+    assert code == 0
+    assert "venue     polymarket-btc-5m" in printed.out
+    assert "break-even 0.5175 from the config" in printed.out
+    assert "note: the config names" not in printed.out
+
+
+def test_the_bar_feed_falls_back_to_the_mirror_when_binance_is_blocked(monkeypatch, capsys):
+    """api.binance.com answers a cloud IP with 451, and the flow gate needs
+    Binance's taker volume, so the mirror is the only live source there."""
+    import btc5m.cli as cli
+    from btc5m.data import synthetic
+
+    calls = []
+
+    def fake_fetch(exchange, symbol, limit):
+        calls.append(exchange)
+        if exchange == "binance":
+            raise RuntimeError("could not reach binance (HTTP Error 451)")
+        return synthetic(400, seed=1)
+
+    monkeypatch.setattr(cli, "fetch_klines", fake_fetch)
+    args = build_parser().parse_args(["watch"])
+    feed = cli._bar_feed(args)
+    assert len(feed()) == 400
+    assert calls == ["binance", "binance-vision"]
+    # The working host is remembered: no second 451 every window.
+    feed()
+    assert calls == ["binance", "binance-vision", "binance-vision"]
+    assert "binance-vision" in capsys.readouterr().out
+
+
+def test_the_bar_feed_reports_every_host_that_failed(monkeypatch):
+    import btc5m.cli as cli
+
+    def always_fails(exchange, symbol, limit):
+        raise RuntimeError(f"{exchange} is unreachable")
+
+    monkeypatch.setattr(cli, "fetch_klines", always_fails)
+    feed = cli._bar_feed(build_parser().parse_args(["watch"]))
+    with pytest.raises(RuntimeError, match="binance is unreachable.*binance-vision"):
+        feed()
+
+
+def test_a_csv_bar_feed_warns_that_it_does_not_refresh(monkeypatch, capsys, tmp_path):
+    import btc5m.cli as cli
+    from btc5m.data import synthetic
+
+    path = tmp_path / "bars.csv"
+    synthetic(400, seed=2).write_csv(path)
+    feed = cli._bar_feed(build_parser().parse_args(["watch", "--data", str(path)]))
+    assert len(feed()) == 400
+    assert "does not refresh" in capsys.readouterr().out
+
+
+def test_settle_and_report_read_a_watch_csv(monkeypatch, capsys, tmp_path):
+    import btc5m.cli as cli
+    from btc5m.watch import Observation, append_row
+
+    path = tmp_path / "q.csv"
+    append_row(path, Observation(window_start=1_789_481_100, window_time="t", offset=5,
+                                 observed_ts=1_789_481_105, up_ask=0.51, down_ask=0.49,
+                                 overround=0.0, skew=0.01, side="UP", p_model=0.56,
+                                 tradable="yes", price=0.5275, edge=0.0325,
+                                 approved="yes", bar_lag=0))
+    monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "settle_quotes", lambda client, quotes: (1, 2))
+    code, printed = run(["settle", "--quotes", str(path)], capsys)
+    assert code == 0 and "settled 1 window(s); 2 ended" in printed.out
+
+    code, printed = run(["report", "--quotes", str(path)], capsys)
+    assert code == 0
+    assert "rows 1   windows 1" in printed.out
+    assert "gates fired   1" in printed.out
+    assert "break-even at this venue" not in printed.out    # no config given
+
+    code, printed = run(["report", "--quotes", str(path),
+                         "--config", config_path("polymarket-5m.json")], capsys)
+    assert "break-even at this venue: 0.517" in printed.out

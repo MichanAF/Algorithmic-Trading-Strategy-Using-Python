@@ -1282,6 +1282,55 @@ this repository is built to route around either. The read side needs no key at
 all, so the first thing to deploy is a watcher that only logs what the quote
 was when the gates fired.
 
+### The one measurement a backtest cannot make
+
+Every backtest in this repository prices its bets at a quote it invented. The
+four pre-registered runs establish that the signal predicts the next five-minute
+bar; none of them establishes that anyone will sell you that bar at a fair
+price. From the probe's own log, three minutes into a window the book was Up
+**0.06 / 0.07** against Down 0.93 / 0.94. If that is where the market already
+is when the bar closes, a 53% signal is worth nothing at it.
+
+`btc5m watch` measures it and places nothing:
+
+```bash
+python -m btc5m watch --config configs/fade-flow-pooled-5m.json \
+    --venue polymarket-btc-5m --windows 12 --out quotes.csv
+python -m btc5m settle --quotes quotes.csv     # who won, once windows have ended
+python -m btc5m report --quotes quotes.csv --config configs/fade-flow-pooled-5m.json
+```
+
+Each window, at 5, 15 and 30 seconds in, it reads both sides' books from the
+CLOB and the engine's verdict on the bar that closed at the window's open, and
+appends one row: the two books, the depth at the touch, the overround, the side
+the stack wants, the price that side actually costs with Polymarket's own
+per-share fee, and the edge left over. `report` then splits those rows by
+whether the gates fired. Three things it is built to catch rather than hide:
+
+| | |
+|---|---|
+| A window with no market, or a side with no asks | still writes a row, with the reason in `note` |
+| A bar feed that lags | `bar_lag` is `window_start - bar_ts`, and 0 is the only correct value. A feed one bar behind is measuring the previous window |
+| Gamma's stale prices | never read: the price is the CLOB book's best ask |
+
+The fee charged here is Polymarket's exact `0.07 × p × (1−p)`, not the flat 175
+basis points the backtest approximates it with. The live path knows the price,
+so it can charge what the venue charges.
+
+**The bar feed is the part that breaks in the cloud.** `api.binance.com` answers
+a US cloud IP with HTTP 451, and the flow gate needs Binance's taker-buy volume,
+which no other exchange in `data.py` publishes. So `binance-vision`, Binance's
+public data mirror, is now a data source in its own right: same payload, same
+fields, no geo-restriction. The watcher tries the main host first and falls back
+to the mirror, printing which one answered. `.github/workflows/polymarket-watch.yml`
+runs an hour of windows on a runner and prints the report in the job summary.
+
+**An hour is an anecdote.** Twelve windows put a standard error of about 14
+points on any hit rate, so the run answers the quote question and not the edge
+question. Accumulating enough windows to answer the second is what a small
+always-on box is for, and the quote question is the one that can end the project
+in an afternoon.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
@@ -1367,7 +1416,9 @@ The engine will not stop you from doing this badly. In order:
 5. **Hold out the last few months** and never tune against them.
 6. **Paper trade against the live feed.** This is where latency, the unclosed
    bar, and the difference between your close and the venue's settlement price
-   show up. The `timing` condition exists for exactly these.
+   show up. The `timing` condition exists for exactly these. `btc5m watch` is
+   this step: it records the real book next to the engine's verdict, window by
+   window, and places nothing.
 7. **Start at a fraction of the sized stake.** Leave `halt_when_unhealthy` on.
 
 Two things this repository does not do, on purpose: it does not place orders, and
@@ -1391,12 +1442,13 @@ btc5m/
   venue.py        live contract quotes, the window clock, gas and sizing
   predictfun.py   predict.fun read side: markets, books, the probe
   polymarket.py   Polymarket read side: Gamma metadata, CLOB books, the probe
+  watch.py        live quote watcher: what the book offered when the gates fired
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            448 tests
+tests/            482 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1406,7 +1458,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 448 passed
+python -m pytest tests/ -q      # 482 passed
 ```
 
 ---

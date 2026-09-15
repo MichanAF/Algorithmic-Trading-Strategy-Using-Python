@@ -253,11 +253,17 @@ def load_csv(path: str | Path, symbol: str = "BTCUSDT") -> BarSeries:
 
 _ENDPOINTS = {
     "binance": "https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+    # Binance's public data mirror.  Same payload, same fields -- including the
+    # taker-buy volume the flow gate needs -- but not geo-restricted, so it
+    # answers from a US IP where api.binance.com returns 451.  The only live
+    # source a watcher on a blocked network has.
+    "binance-vision": "https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
     "coinbase": "https://api.exchange.coinbase.com/products/{symbol}/candles?granularity=300",
     "kraken": "https://api.kraken.com/0/public/OHLC?pair={symbol}&interval=5",
 }
 
-_DEFAULT_SYMBOLS = {"binance": "BTCUSDT", "coinbase": "BTC-USD", "kraken": "XBTUSD"}
+_DEFAULT_SYMBOLS = {"binance": "BTCUSDT", "binance-vision": "BTCUSDT",
+                    "coinbase": "BTC-USD", "kraken": "XBTUSD"}
 
 
 def fetch_klines(exchange: str = "binance", symbol: str | None = None,
@@ -274,7 +280,7 @@ def fetch_klines(exchange: str = "binance", symbol: str | None = None,
         raise ValueError(f"unsupported exchange {exchange!r}; "
                          f"choose from {sorted(_ENDPOINTS)}")
     bar_seconds = _bar_seconds_for(interval)
-    if interval != "5m" and exchange != "binance":
+    if interval != "5m" and not exchange.startswith("binance"):
         raise ValueError(f"{exchange} is wired for 5m candles only; "
                          f"{interval} needs --exchange binance")
     symbol = symbol or _DEFAULT_SYMBOLS[exchange]
@@ -321,7 +327,7 @@ def _parse_candles(exchange: str, payload, symbol: str,
     def taker(k) -> float:
         return float(k[9]) if len(k) > 9 else float("nan")
 
-    if exchange == "binance":
+    if exchange.startswith("binance"):
         # Derived from openTime, not closeTime.  Binance's closeTime is the last
         # *millisecond* of the interval (openTime + 299999), so //1000 lands a
         # second short of the boundary and real bars would carry ...:04:59 where
@@ -389,7 +395,7 @@ def fetch_history(exchange: str = "binance", symbol: str | None = None,
     if bars < 1:
         raise ValueError(f"bars must be positive, got {bars}")
     bar_seconds = _bar_seconds_for(interval)
-    if interval != "5m" and exchange != "binance":
+    if interval != "5m" and not exchange.startswith("binance"):
         raise ValueError(f"{exchange} is wired for 5m candles only; "
                          f"{interval} needs --exchange binance")
 

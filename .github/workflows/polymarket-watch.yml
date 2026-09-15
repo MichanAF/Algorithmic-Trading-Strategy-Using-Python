@@ -1,0 +1,119 @@
+# Watch live Polymarket windows and record what the book offered when the gates
+# fired.  This is the one measurement no backtest can make: every backtest here
+# prices its bets at a quote it invented, and the whole strategy rests on the
+# market still being near even in the first seconds of a window.
+#
+# Read only.  No key, no wallet, no order endpoint; the CSV and the report are
+# the deliverable, and nothing here places a bet or can.  Nothing here is a
+# test either, and no year of history is fetched, so no pre-registered run is
+# spent.
+#
+# An hour of windows is twelve bets at most -- an anecdote about the edge, but
+# enough to answer the quote question and to prove the pipeline works against
+# the live venue before it is deployed anywhere.
+
+name: Polymarket quote watch
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/btc5m/watch.py'
+      - '.github/workflows/polymarket-watch.yml'
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: five-minute windows to watch (12 is an hour)
+        default: "12"
+      offsets:
+        description: seconds into each window to read the book
+        default: "5,15,30"
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # Which bar feed answers from this runner, on the record.  api.binance.com
+      # returns 451 to a US cloud IP; the flow gate needs Binance's taker volume,
+      # which no other exchange publishes, so the mirror is the only live source.
+      - name: Which bar feed answers here
+        run: |
+          for host in api.binance.com data-api.binance.vision; do
+            code=$(curl -sS -o /tmp/k.json -w '%{http_code}' --max-time 20 \
+              "https://$host/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=2" || echo "000")
+            echo "$host -> HTTP $code  $(head -c 120 /tmp/k.json 2>/dev/null)"
+          done
+
+      - name: Watch the live windows
+        env:
+          WINDOWS: ${{ inputs.windows }}
+          OFFSETS: ${{ inputs.offsets }}
+        run: |
+          python -m btc5m watch \
+            --config configs/fade-flow-pooled-5m.json \
+            --venue polymarket-btc-5m \
+            --windows "${WINDOWS:-12}" --offsets "${OFFSETS:-5,15,30}" \
+            --out quotes.csv 2>&1 | tee watch.log
+          test ${PIPESTATUS[0]} -eq 0
+
+      # Settlement posts to Gamma well after a window ends, so the newest
+      # windows stay unresolved here.  The quote question does not need them.
+      - name: Fill in who won, where the venue has said
+        if: always()
+        continue-on-error: true
+        run: python -m btc5m settle --quotes quotes.csv 2>&1 | tee settle.log
+
+      - name: Report
+        if: always()
+        continue-on-error: true
+        run: |
+          python -m btc5m report --quotes quotes.csv \
+            --config configs/fade-flow-pooled-5m.json 2>&1 | tee report.log
+
+      - name: Keep the quotes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quotes
+          path: |
+            btc_5m_binary/quotes.csv
+            btc_5m_binary/watch.log
+            btc_5m_binary/report.log
+          if-no-files-found: warn
+
+      - name: Write the summary
+        if: always()
+        run: |
+          {
+            echo "## Was the market near even when the gates fired?"
+            echo
+            echo "Read only, no key, no orders. The config is the pooled one that passed its"
+            echo "fresh-year test; the quote is Polymarket's live book."
+            echo
+            echo '```'
+            cat report.log 2>/dev/null || echo "(no report)"
+            echo '```'
+            echo
+            echo "<details><summary>Every reading</summary>"
+            echo
+            echo '```'
+            tail -n 120 watch.log 2>/dev/null || echo "(no log)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

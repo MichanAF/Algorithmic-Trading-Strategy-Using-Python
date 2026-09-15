@@ -446,3 +446,36 @@ reach the hosts). What the live payloads said:
 Nothing in the four pre-registered runs changes: they measured the
 signal against Binance closes, and the venue's settlement is a separate
 question that gets its own measurement before any money moves.
+
+### The quote, which nothing has measured yet
+
+The four pre-registered runs say the signal predicts the bar. Not one of
+them says anybody will sell that bar at a fair price: every backtest here
+prices its bets at a quote the backtest invented. The probe's own log
+shows why that matters -- three minutes into a window the book was Up
+0.06 / 0.07 against Down 0.93 / 0.94, and a 53% signal is worth nothing
+at that price.
+
+So `btc5m watch` now records, every window, at 5, 15 and 30 seconds in:
+both sides' books, the depth at the touch, the overround, the side the
+stack wants, what that side costs with Polymarket's exact per-share fee,
+and the edge left. `settle` fills in who won once the venue says, and
+`report` splits it all by whether the gates fired. It places nothing and
+holds no key.
+
+Three facts it records rather than hides: a window with no market or a
+side with no asks still writes a row with the reason; `bar_lag` says
+whether the engine read the bar that closed at the window's open, where
+0 is the only correct value; and the price is always the CLOB book's best
+ask, never Gamma's, which the probe caught minutes stale on an open
+window.
+
+One thing that had to be built for it: api.binance.com answers a US cloud
+IP with 451, and the flow gate needs Binance's taker-buy volume, which no
+other exchange in data.py publishes. Binance's public mirror
+(data-api.binance.vision) is now a data source in its own right, and the
+watcher falls back to it and says so.
+
+An hour of windows is twelve bets, a standard error of about 14 points on
+any hit rate. It answers the quote question, not the edge question, and
+the quote question is the one that can end this in an afternoon.
