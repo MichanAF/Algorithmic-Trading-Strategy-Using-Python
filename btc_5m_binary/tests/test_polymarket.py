@@ -37,13 +37,16 @@ def market_payload(**over):
             "outcomePrices": '["0.505", "0.495"]',
             "clobTokenIds": f'["{UP}", "{DOWN}"]',
             "startDate": LISTED, "endDate": "2026-09-15T14:10:00Z",
+            "eventStartTime": "2026-09-15T14:05:00Z",
             "createdAt": "2026-09-14T14:12:39.553788Z",
+            "updatedAt": "2026-09-15T14:03:58.622168Z",   # before the window opened
             "active": True, "closed": False, "acceptingOrders": True,
-            "bestAsk": 0.53, "spread": 0.02,
+            "bestBid": 0.5, "bestAsk": 0.51, "lastTradePrice": 0.51, "spread": 0.01,
             "orderPriceMinTickSize": 0.01, "orderMinSize": 5,
-            "makerBaseFee": 1000, "takerBaseFee": 1000,
-            "feesEnabled": True, "feeSchedule": {"kind": "fixture"},
-            "secondsDelay": 3, "clearBookOnStart": True,
+            "makerBaseFee": 1000, "takerBaseFee": 1000, "feesEnabled": True,
+            "feeType": "crypto_fees_v2",
+            "feeSchedule": {"exponent": 1, "rate": 0.07, "takerOnly": True, "rebateRate": 0.2},
+            "secondsDelay": 0, "clearBookOnStart": False,
             "negRisk": False, "restricted": True}
     base.update(over)
     return base
@@ -52,7 +55,8 @@ def market_payload(**over):
 def event_payload(market, **over):
     base = {"id": "1022968", "ticker": market["slug"], "slug": market["slug"],
             "title": market["question"], "startDate": market.get("startDate"),
-            "endDate": market.get("endDate"), "active": True, "closed": False,
+            "startTime": market.get("eventStartTime"), "endDate": market.get("endDate"),
+            "seriesSlug": "btc-up-or-down-5m", "active": True, "closed": False,
             "markets": [market]}
     base.update(over)
     return base
@@ -180,14 +184,57 @@ def test_a_gamma_market_parses_with_its_encoded_lists():
     assert m.token_ids == [UP, DOWN]
     assert m.outcome_prices == [pytest.approx(0.505), pytest.approx(0.495)]
     assert m.active and not m.closed and m.accepting_orders
-    assert m.best_ask == pytest.approx(0.53) and m.best_bid is None
+    assert m.best_ask == pytest.approx(0.51) and m.best_bid == pytest.approx(0.5)
     assert m.tick == pytest.approx(0.01)
     assert m.min_order == 5.0                       # shares, not scaled as a price
     assert m.maker_base_fee == 1000.0 and m.taker_base_fee == 1000.0
-    assert m.fees_enabled is True and m.fee_schedule == {"kind": "fixture"}
-    assert m.seconds_delay == 3.0 and m.clear_book_on_start is True
+    assert m.fees_enabled is True and m.fee_schedule["rate"] == 0.07
+    assert m.seconds_delay == 0.0 and m.clear_book_on_start is False
     assert m.resolution_source.endswith("btc-usd-twap-60s-streams")
+    assert m.updated_at == START - 62
     assert m.raw["id"] == "4552589"
+
+
+def test_the_declared_start_wins_and_the_slug_is_the_fallback():
+    """eventStartTime is the window's opening second; the slug agrees on the
+    live market, and stands in when the field is absent."""
+    declared = PolyMarket.from_payload(market_payload(eventStartTime="2026-09-15T14:06:00Z"))
+    assert declared.starts_at == START + 60          # the field, even against the slug
+    from_slug = PolyMarket.from_payload(market_payload(eventStartTime=None))
+    assert from_slug.starts_at == START
+    nested = market_payload(eventStartTime=None, endDate=None)
+    event = event_payload(nested, startTime="2026-09-15T14:05:00Z")
+    nested["events"] = [event]
+    from_event = PolyMarket.from_payload(nested)
+    assert (from_event.starts_at, from_event.ends_at) == (START, START + 300)
+    assert from_event.series_slug == "btc-up-or-down-5m"
+
+
+def test_the_fee_comes_from_the_market_schedule_and_matches_the_documentation():
+    """fee = C x rate x p x (1 - p), crypto rate 0.07, makers never charged:
+    1.75 cents a share at 0.50, which is what the venue profile charges."""
+    m = PolyMarket.from_payload(market_payload())
+    assert m.fee_type == "crypto_fees_v2"
+    assert m.fee_rate == 0.07 and m.fee_exponent == 1.0
+    assert m.fee_taker_only is True and m.fee_rebate_rate == 0.2
+    assert m.fee_per_share(0.50) == pytest.approx(0.0175)
+    assert m.fee_per_share(0.30) == pytest.approx(0.0147)
+    assert m.fee_per_share(0.30) == pytest.approx(m.fee_per_share(0.70))
+    assert m.fee_per_share(0.50, taker=False) == 0.0
+    assert m.fee_per_share(0.50) == pytest.approx(POLYMARKET_BTC_5M.fee_per_share(0.50))
+    # No schedule on the payload: the profile's rate, not zero.
+    bare = PolyMarket.from_payload(market_payload(feeSchedule=None))
+    assert bare.fee_rate is None and bare.fee_per_share(0.5) == pytest.approx(0.0175)
+    # A schedule that charges makers too is honoured, not assumed away.
+    both = PolyMarket.from_payload(market_payload(
+        feeSchedule={"rate": 0.05, "exponent": 1, "takerOnly": False}))
+    assert both.fee_per_share(0.5, taker=False) == pytest.approx(0.0125)
+
+
+def test_gamma_prices_carry_their_age():
+    m = PolyMarket.from_payload(market_payload())
+    assert m.prices_age(now=START + 197) == 259
+    assert PolyMarket.from_payload(market_payload(updatedAt=None)).prices_age(now=START) is None
 
 
 def test_the_window_comes_from_the_slug_and_end_date_not_from_start_date():
@@ -213,12 +260,12 @@ def test_a_market_without_a_timed_slug_has_no_window_unless_it_declares_a_start(
     hourly = PolyMarket.from_payload(market_payload(
         slug="bitcoin-up-or-down-september-17-2026-10am-et",
         question="Bitcoin Up or Down - September 17, 10AM ET",
-        endDate="2026-09-17T15:00:00Z"))
+        endDate="2026-09-17T15:00:00Z", eventStartTime=None))
     assert hourly.starts_at is None and hourly.ends_at == 1_789_657_200
     assert hourly.window_seconds is None and not hourly.is_five_minute()
     assert hourly.is_btc() and hourly.is_up_down()          # by its words
     declared = PolyMarket.from_payload(market_payload(
-        slug="some-game", gameStartTime="2026-09-15T14:05:00Z"))
+        slug="some-game", eventStartTime=None, gameStartTime="2026-09-15T14:05:00Z"))
     assert declared.starts_at == START and declared.window_seconds == 300
 
 
@@ -240,13 +287,13 @@ def test_the_filters_reject_what_they_should():
     assert fifteen.is_btc() and fifteen.window_seconds == 900 and not fifteen.is_five_minute()
     level = PolyMarket.from_payload(market_payload(
         question="Will Bitcoin hit $150k in 2025?", slug="will-bitcoin-hit-150k-in-2025",
-        endDate="2025-12-31T23:59:00Z"))
+        endDate="2025-12-31T23:59:00Z", eventStartTime=None))
     assert level.is_btc() and not level.is_up_down()
     assert level.window_seconds is None and not level.is_five_minute()
 
 
 def test_the_end_falls_back_to_the_event_it_is_nested_in():
-    row = market_payload(endDate=None, slug="odd-slug")
+    row = market_payload(endDate=None, slug="odd-slug", eventStartTime=None)
     row["events"] = [{"slug": SLUG, "startDate": LISTED, "endDate": "2026-09-15T14:10:00Z"}]
     m = PolyMarket.from_payload(row)
     assert m.ends_at == START + 300 and m.listed_at == START - 86_400 + 523
@@ -266,7 +313,8 @@ def test_open_means_inside_the_window_and_not_closed():
     assert m.is_open(START) and m.is_open(START + 299)
     assert not m.is_open(START - 1) and not m.is_open(START + 300)
     assert not PolyMarket.from_payload(market_payload(closed=True)).is_open(START + 10)
-    assert not PolyMarket.from_payload(market_payload(slug="untimed")).is_open(START + 10)
+    assert not PolyMarket.from_payload(market_payload(slug="untimed",
+                                                      eventStartTime=None)).is_open(START + 10)
 
 
 def test_a_settled_market_names_its_winner_from_the_one_and_zero():
@@ -392,14 +440,14 @@ def test_the_current_window_falls_back_to_the_listing_when_the_slug_misses():
 
 def test_only_five_minute_btc_up_down_markets_are_kept_in_start_order():
     later = market_payload(id="later", slug=f"btc-updown-5m-{START + 300}",
-                           endDate="2026-09-15T14:15:00Z")
+                           eventStartTime="2026-09-15T14:10:00Z", endDate="2026-09-15T14:15:00Z")
     client = Fake(markets=[
         later,
         market_payload(id="eth", question="Ethereum Up or Down", slug=f"eth-updown-5m-{START}"),
         market_payload(id="btc15", slug=f"btc-updown-15m-{START}",
                        endDate="2026-09-15T14:20:00Z"),
         market_payload(id="level", question="Will Bitcoin hit $150k?", slug="btc-150k",
-                       endDate="2025-12-31T00:00:00Z"),
+                       endDate="2025-12-31T00:00:00Z", eventStartTime=None),
         market_payload(id="now"),
     ])
     assert [m.market_id for m in client.btc_five_minute_markets()] == ["now", "later"]
@@ -432,7 +480,7 @@ def test_a_quote_refuses_a_market_it_cannot_price():
     with pytest.raises(PolymarketError, match="not Up/Down"):
         client.quote(PolyMarket.from_payload(market_payload(outcomes='["Yes", "No"]')))
     with pytest.raises(PolymarketError, match="no start time"):
-        client.quote(PolyMarket.from_payload(market_payload(slug="untimed")))
+        client.quote(PolyMarket.from_payload(market_payload(slug="untimed", eventStartTime=None)))
     thin = books()
     thin[DOWN]["asks"] = []
     with pytest.raises(PolymarketError, match="no asks"):
@@ -497,8 +545,12 @@ def test_probe_shows_the_current_window_its_books_and_the_clob_record(monkeypatc
     text = probe(client, limit=3)
     assert f"slug {SLUG}" in text
     assert "current window (" in text and f"window    {START} -> {START + 300} (300s)" in text
-    assert "min order 5.0" in text and "fees      maker 1000.0 taker 1000.0" in text
-    assert "secondsDelay 3.0   clearBookOnStart True" in text
+    assert "min order 5.0" in text
+    assert "fees      schedule rate 0.07 exponent 1.0 taker only True rebate 0.2" in text
+    assert "per share at 0.50: 0.0175" in text and "maker 1000.0 taker 1000.0" in text
+    assert "secondsDelay 0.0   clearBookOnStart False" in text
+    assert "gamma     prices as of" in text and "read the book" in text
+    assert "series btc-up-or-down-5m" not in text        # /markets alone carries no event
     assert "Up     bid 0.51 ask 0.53 mid 0.52" in text
     assert "Down   bid 0.47 ask 0.49" in text
     assert "book keys ['asks', 'asset_id', 'bids', 'hash', 'market', 'timestamp']" in text

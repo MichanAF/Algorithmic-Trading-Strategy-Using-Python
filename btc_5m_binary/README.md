@@ -921,8 +921,8 @@ an edge survives.
 | Collateral | USDT | USDC | USDH |
 | Settles from | **per market** — a live one declares Pyth BTC/USD | Chainlink BTC/USD | HyperCore mark price |
 | Exact tie | pays 0.50 to both sides | resolves **Up** (`>=`) | n/a |
-| Taker fee | `feeRateBps` — **200** on a live market | `shares × 0.07 × p × (1−p)` | zero (initial testing) |
-| Maker fee | not separately documented | **zero** | zero |
+| Taker fee | `feeRateBps` — **200** on a live market | `shares × 0.07 × p × (1−p)` — **confirmed** on a live market's `feeSchedule` and in the docs | zero (initial testing) |
+| Maker fee | not separately documented | **zero**, documented: makers are never charged | zero |
 | Min order | not documented | 5 USDC | n/a |
 | Per-bet gas | yes, BNB Chain | none (off-chain CLOB) | none |
 | API | `api.predict.fun`, `x-api-key`, Python and TS SDKs | Gamma + CLOB + WebSocket | Python SDK |
@@ -1209,28 +1209,72 @@ title. The two look nearly identical in a listing, and a 5-minute signal on a
 so the edge the gates measured over one bar is diluted across three. An unfiltered
 `markets()` call will hand you both.
 
-### Polymarket's read side: a probe, not a confirmed shape
+### Polymarket's read side, confirmed on a live window
 
-`polymarket.py` is the same idea for the other venue, and it is one step behind:
-its field names have not been checked against a live response yet. Two public
-hosts, both answering unauthenticated GETs, neither able to move money:
+`polymarket.py` is the same idea for the other venue: two public hosts, both
+answering unauthenticated GETs, neither able to move money. The sandbox this
+was written from cannot reach either, so the check runs on a GitHub Actions
+runner: `.github/workflows/polymarket-probe.yml` runs
+`btc5m probe --venue polymarket-btc-5m` and keeps the raw payloads in the job
+log. Every field below comes from that log, not from memory. Two of the first
+guesses were wrong, and either would have cost money live: the window's start
+was read from a field that is not the start, and the minimum order size was
+read as a price.
 
 | | |
 |---|---|
-| Gamma, `gamma-api.polymarket.com` | what exists: `/markets`, `/events`, each addressable by `slug` |
-| CLOB, `clob.polymarket.com` | what it costs: `/book?token_id=` and `/midpoint?token_id=` |
-| List fields | `outcomes`, `outcomePrices`, `clobTokenIds` arrive as JSON-encoded **strings**; every list is read through a decoder that accepts either form |
-| Window | `startDate` / `endDate` on the market, or on the event it is nested in |
-| Sides | `Up` / `Down` matched by name to the two token ids; a `Yes`/`No` market is refused |
-| Price to buy | the best **ask** on that side's book, as on predict.fun |
-| Finding the window | the newest listing, then the event listing, then the slug shapes `btc-updown-5m-<start ts>` and three variants for the current five-minute boundary |
+| Gamma, `gamma-api.polymarket.com` | what exists: `/markets?slug=` and `/events?slug=` both return a window |
+| CLOB, `clob.polymarket.com` | what it costs: `/book?token_id=`, `/midpoint?token_id=`, and the market's own record at `/markets/<conditionId>` |
+| The window's slug | `btc-updown-5m-<opening second>`: `btc-updown-5m-1789481100` is "Bitcoin Up or Down - September 15, 10:05AM-10:10AM ET" |
+| Window start | `eventStartTime` on the market, `startTime` on its event, and the slug's timestamp, which all agree. `startDate` is when the market went live, about a day earlier |
+| Window end | `endDate`, e.g. `2026-09-15T14:10:00Z`; the slug's `5m` fills it in if it is missing |
+| List fields | `outcomes`, `outcomePrices`, `clobTokenIds` are JSON-encoded **strings** |
+| Sides | `["Up", "Down"]`, matched by name to the two token ids, which are 77-digit integers |
+| Settled | `closed: true` with `outcomePrices` of `"1"` and `"0"` |
+| Order rules | `orderMinSize` **5 shares**, `orderPriceMinTickSize` 0.01 |
+| Fees | `feeSchedule` `{rate: 0.07, exponent: 1, takerOnly: true, rebateRate: 0.2}`; the `makerBaseFee` / `takerBaseFee` of 1000 are base fields it overrides |
+| Gamma prices | `outcomePrices`, `bestBid`, `bestAsk`, `lastTradePrice` were minutes stale on an open window; **price from the CLOB book only** |
+| Delay, book | `secondsDelay` 0, `clearBookOnStart` false; orders accepted from the listing time, a day ahead |
+| Resolution | Chainlink BTC/USD **60-second TWAP** stream, Up on `>=` |
+| Listing | windows are listed a day ahead, so a newest-first listing shows tomorrow's; today's is addressed by slug |
 
-The sandbox this was written from cannot reach either host, so the check runs on
-a GitHub Actions runner: `.github/workflows/polymarket-probe.yml` runs
-`btc5m probe --venue polymarket-btc-5m`, prints the raw payloads and the slug
-guesses that answered, and puts it all in the job summary. The guesses are
-corrected from that log, and this section is rewritten as a confirmed table
-when they are. Until then treat every field name above as the hypothesis it is.
+**The resolution feed changed.** The April 2026 windows resolved on the spot
+stream, `btc-usd`; the September ones resolve on `btc-usd-twap-60s-streams`, a
+one-minute time-weighted average at each end of the window. That is not the
+close-to-close return the backtest settles on: a bar that reverses hard in its
+last thirty seconds settles differently under a TWAP than under its close, and a
+fade of a large bar is exactly the bet that cares. The difference is measurable
+from the minute bars already fetched and has not been measured. It is the next
+question on this venue after the quote.
+
+**The fee, confirmed twice.** The market's own `feeSchedule` reads
+`{rate: 0.07, exponent: 1, takerOnly: true, rebateRate: 0.2}` under
+`feeType: crypto_fees_v2`, and the documentation gives the formula
+`fee = C × feeRate × p × (1 − p)` with the crypto taker rate 0.07, the maker rate
+0 and a 20% maker rebate. That is exactly what `POLYMARKET_BTC_5M.fee_per_share`
+and `configs/polymarket-5m.json` (`fee_bps` 175) have charged all along: 1.75
+cents a share at 0.50, 3.5% of notional, break-even 51.75%. **Makers are never
+charged.** The `makerBaseFee` and `takerBaseFee` fields of 1000 on the same
+market, and the 1000 the CLOB's `fee-rate` endpoint returns, are base-rate
+fields the schedule overrides, not the effective fee. `PolyMarket.fee_per_share`
+prices from the schedule the market carries, so a rate change shows up in the
+quote rather than in a constant. The documentation also describes a tiered
+taker rebate; nothing here counts on it.
+
+**Gamma's prices are stale; the book is not.** Three minutes into an open
+window, Gamma still showed `bestBid` 0.50, `bestAsk` 0.51 and `outcomePrices`
+0.505/0.495, with an `updatedAt` from before the window opened, while the
+CLOB book had the Up side at 0.06/0.07 and Down at 0.93/0.94. `quote()` reads
+the two books and nothing else; `PolyMarket.prices_age()` says how old the
+Gamma numbers are if you are tempted.
+
+**One more thing the documentation index says.** Trading collateral is now
+described as **pUSD**, Polymarket USD, while the rewards on the sampled
+markets still name the USDC.e contract. Which token a deposit turns into is a
+question for the deployment step, not for the read side. The same index lists
+**session keys**, a separate signer with scoped, time-limited authority over a
+deposit wallet: that, not the wallet's own key, is the shape any later signer
+on the server should take.
 
 Where the process runs is a hosting choice, not a venue one. Polymarket's own
 terms and the law where you are apply wherever the server sits, and nothing in
@@ -1352,7 +1396,7 @@ btc5m/
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            445 tests
+tests/            448 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1362,7 +1406,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 445 passed
+python -m pytest tests/ -q      # 448 passed
 ```
 
 ---

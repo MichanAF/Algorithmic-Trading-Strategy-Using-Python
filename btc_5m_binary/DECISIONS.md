@@ -387,3 +387,62 @@ at risk in an ordinary year and a lock-up in a bad one. The two numbers
 that decide the predict.fun case -- gas per bet, and whether the quote is
 still near 50/50 when the gates fire -- are measured live at no cost, and
 come before any other choice.
+
+### Decision 10, second value: the venue is Polymarket, and its API has been read
+
+Chosen: **Polymarket**, with the process hosted on a small AWS instance in
+the UAE region (me-central-1), the user's reason being proximity and a
+network they trust to stay up. Polymarket's own terms and the law where
+the user is apply wherever the server sits; nothing in this repository is
+built to route around either. Options not taken: predict.fun (loses in
+five of six seen years at $1,000 after the placeholder gas, and the real
+gas is still unmeasured); a US or EU region (further from the user, with
+no bearing on the venue's rules).
+
+The read side of the venue was written first, because it needs no key
+and can move no money, and its field names were checked against the
+live API from a GitHub Actions runner on 2026-09-15 (the sandbox cannot
+reach the hosts). What the live payloads said:
+
+- A five-minute BTC window is one market in one event, both at the slug
+  `btc-updown-5m-<opening second>`; `/markets?slug=` and `/events?slug=`
+  both return it. Windows are listed about a day ahead.
+- `endDate` is the window's end. `startDate` is **not** its start but the
+  listing time, a day earlier; the first draft read it as the start and
+  saw 86,177-second windows. The start now comes from the slug.
+- `outcomes`, `outcomePrices`, `clobTokenIds` are JSON-encoded strings;
+  the outcomes are `Up` and `Down`; a settled window carries `"1"`/`"0"`.
+- `orderMinSize` is 5 shares (the first draft scaled it to 0.5 as if it
+  were a price) and the tick is 0.01.
+- Resolution: Chainlink's BTC/USD **60-second TWAP** stream, Up on `>=`.
+  The April 2026 windows used the spot stream. A one-minute average at
+  each end is not the close-to-close return every backtest here settles
+  on. Not yet measured; it is measurable from the minute bars.
+- The fee, confirmed twice. The market's `feeSchedule` reads `rate 0.07,
+  exponent 1, takerOnly true, rebateRate 0.2` (`feeType crypto_fees_v2`),
+  and the documentation gives `fee = C × feeRate × p × (1 − p)` with the
+  crypto taker rate 0.07, makers never charged, 20% of taker fees rebated
+  to makers. The 1.75 cents a share at 0.50 and the 51.75% break-even in
+  Decision 10's table stand, on evidence now rather than memory. The
+  `makerBaseFee` / `takerBaseFee` of 1000 on the same market are base
+  fields the schedule overrides.
+- `eventStartTime` on the market (`startTime` on its event) is the
+  window's opening second and agrees with the slug; the code reads the
+  field first and the slug second.
+- Gamma's `outcomePrices`, `bestBid`, `bestAsk` and `lastTradePrice` were
+  minutes stale on an open window (`updatedAt` before the window opened)
+  while the CLOB book had moved from 0.51 to 0.07. Prices come from the
+  book only.
+- What a window looks like from inside: at 197 seconds into
+  `btc-updown-5m-1789481700` the book was Up 0.06/0.07, Down 0.93/0.94,
+  with a one-cent spread and a few hundred shares at the touch on each
+  side. The market moves far within a window; the quote that matters is
+  the one in the first seconds, which the watcher measures.
+- The documentation index now describes pUSD as the trading collateral
+  and lists session keys (a separate, scoped, time-limited signer for a
+  deposit wallet). Both belong to the deployment step; the second is the
+  shape any signer on the server should take.
+
+Nothing in the four pre-registered runs changes: they measured the
+signal against Binance closes, and the venue's settlement is a separate
+question that gets its own measurement before any money moves.

@@ -31,6 +31,8 @@ on:
     # is what workflow_dispatch is for.
     paths:
       - 'btc_5m_binary/btc5m/**'
+      - '!btc_5m_binary/btc5m/polymarket.py'
+      - '!btc_5m_binary/btc5m/predictfun.py'
       - 'btc_5m_binary/configs/**'
       - '.github/workflows/real-data-backtest.yml'
   workflow_dispatch:

@@ -23,12 +23,20 @@ run on 2026-09-15 (the workflow ``polymarket-probe.yml`` keeps the log):
 * ``outcomes``, ``outcomePrices`` and ``clobTokenIds`` are JSON-encoded
   *strings*; every list here is read through a decoder that accepts either
   form.  Outcomes are ``Up`` and ``Down``, in that order.
+* ``eventStartTime`` on the market (``startTime`` on its event) is the
+  window's opening second, and it equals the slug's timestamp.
 * ``orderMinSize`` is 5 (shares), ``orderPriceMinTickSize`` 0.01.
 * Resolution: Up if the Chainlink BTC/USD 60-second TWAP at the end of the
   window is greater than or equal to the price at its start.  A tie pays Up.
-* ``makerBaseFee`` and ``takerBaseFee`` are both 1000 on the live market.
-  What a base fee of 1000 costs per share is read from the CLOB and the fee
-  documentation on the runner, not assumed here.
+* The fee is the market's ``feeSchedule``: ``{rate: 0.07, exponent: 1,
+  takerOnly: true, rebateRate: 0.2}`` under ``feeType: crypto_fees_v2``, and
+  the documentation gives ``fee = C x feeRate x p x (1 - p)`` with makers
+  never charged.  ``makerBaseFee`` / ``takerBaseFee`` (1000) and the CLOB's
+  ``/fee-rate`` (``base_fee`` 1000) are base fields the schedule overrides.
+* Gamma's ``outcomePrices``, ``bestBid``, ``bestAsk`` and ``lastTradePrice``
+  were minutes stale on an open window (``updatedAt`` before the window
+  opened) while the CLOB book had moved from 0.51 to 0.07.  Prices come from
+  the book, never from Gamma.
 """
 
 from __future__ import annotations
@@ -155,6 +163,13 @@ class PolyMarket:
     fee_schedule: Any = None
     seconds_delay: float | None = None
     clear_book_on_start: bool | None = None
+    updated_at: int | None = None          # when Gamma last refreshed its prices
+    series_slug: str = ""                  # "btc-up-or-down-5m"
+    fee_type: str = ""                     # "crypto_fees_v2"
+    fee_rate: float | None = None          # feeSchedule.rate: 0.07 on crypto
+    fee_exponent: float = 1.0
+    fee_taker_only: bool = True
+    fee_rebate_rate: float | None = None   # share of taker fees rebated to makers
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -175,14 +190,23 @@ class PolyMarket:
             ends = _as_epoch(_first(event, "endDate", "end_date"))
 
         timed = _SLUG_RE.match(slug)
-        asset, minutes, starts = "", None, None
+        asset, minutes = "", None
+        # The declared opening second first, the slug's second, then a game
+        # start.  Never the listing time.
+        starts = _as_epoch(_first(payload, "eventStartTime", "event_start_time"))
+        if starts is None:
+            starts = _as_epoch(_first(event, "startTime", "start_time"))
         if timed:
-            asset, minutes, starts = timed["asset"], int(timed["minutes"]), int(timed["ts"])
+            asset, minutes = timed["asset"], int(timed["minutes"])
+            if starts is None:
+                starts = int(timed["ts"])
             if ends is None:
                 ends = starts + minutes * 60
-        else:
-            # Only a declared start counts; the listing time is not the window.
+        elif starts is None:
             starts = _as_epoch(_first(payload, "gameStartTime", "game_start_time"))
+        schedule = _first(payload, "feeSchedule")
+        schedule = schedule if isinstance(schedule, dict) else {}
+        series = _first(event, "seriesSlug") or _first(payload, "seriesSlug") or ""
 
         return cls(
             market_id=str(_first(payload, "id", "marketId") or ""),
@@ -209,8 +233,34 @@ class PolyMarket:
             fee_schedule=_first(payload, "feeSchedule"),
             seconds_delay=_as_float(_first(payload, "secondsDelay")),
             clear_book_on_start=_as_opt_bool(_first(payload, "clearBookOnStart")),
+            updated_at=_as_epoch(_first(payload, "updatedAt", "updated_at")),
+            series_slug=str(series),
+            fee_type=str(_first(payload, "feeType") or ""),
+            fee_rate=_as_float(schedule.get("rate")),
+            fee_exponent=_as_float(schedule.get("exponent")) or 1.0,
+            fee_taker_only=_as_bool(schedule.get("takerOnly", True)),
+            fee_rebate_rate=_as_float(schedule.get("rebateRate")),
             raw=payload,
         )
+
+    def fee_per_share(self, price: float, taker: bool = True) -> float:
+        """USDC per share at ``price``, from the market's own schedule.
+
+        ``fee = rate x (p x (1 - p)) ** exponent``, the documented formula at
+        exponent 1.  Makers pay nothing when the schedule is taker-only.  A
+        market with no schedule is priced at the venue profile's rate.
+        """
+        if not taker and self.fee_taker_only:
+            return 0.0
+        rate = self.fee_rate if self.fee_rate is not None else POLYMARKET_BTC_5M.fee_coefficient
+        return rate * (price * (1.0 - price)) ** self.fee_exponent
+
+    def prices_age(self, now: int | None = None) -> int | None:
+        """Seconds since Gamma last refreshed its prices; None if unknown."""
+        if self.updated_at is None:
+            return None
+        now = now if now is not None else int(datetime.now(tz=timezone.utc).timestamp())
+        return now - self.updated_at
 
     @property
     def window_seconds(self) -> int | None:
@@ -516,9 +566,13 @@ def _describe(m: PolyMarket) -> list[str]:
         f"secondsDelay {m.seconds_delay}   clearBookOnStart {m.clear_book_on_start}",
         f"  outcomes  {m.outcomes}   prices {m.outcome_prices}   settled {m.settled_side()}",
         f"  tokens    {[t[:12] + '...' for t in m.token_ids]}   tick {m.tick} min order {m.min_order}",
-        f"  fees      maker {m.maker_base_fee} taker {m.taker_base_fee} enabled {m.fees_enabled}"
-        f"   schedule {json.dumps(m.fee_schedule, default=str)[:200]}",
-        f"  resolves  {m.resolution_source}",
+        f"  fees      schedule rate {m.fee_rate} exponent {m.fee_exponent} taker only "
+        f"{m.fee_taker_only} rebate {m.fee_rebate_rate} type {m.fee_type!r}   "
+        f"per share at 0.50: {m.fee_per_share(0.5):.4f}   "
+        f"(base fields: maker {m.maker_base_fee} taker {m.taker_base_fee} enabled {m.fees_enabled})",
+        f"  gamma     prices as of {m.updated_at} ({m.prices_age()}s ago): "
+        f"bid {m.best_bid} ask {m.best_ask} -- stale on an open window, read the book",
+        f"  resolves  {m.resolution_source}   series {m.series_slug}",
     ]
 
 

@@ -20,6 +20,8 @@ on:
       - 'claude/**'
     paths:
       - 'btc_5m_binary/btc5m/**'
+      - '!btc_5m_binary/btc5m/polymarket.py'
+      - '!btc_5m_binary/btc5m/predictfun.py'
       - '.github/workflows/flow-dev.yml'
   workflow_dispatch:
 

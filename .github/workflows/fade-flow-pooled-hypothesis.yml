@@ -33,6 +33,8 @@ on:
     paths:
       - 'btc_5m_binary/configs/fade-flow-pooled-5m.json'
       - 'btc_5m_binary/btc5m/**'
+      - '!btc_5m_binary/btc5m/polymarket.py'
+      - '!btc_5m_binary/btc5m/predictfun.py'
       - '.github/workflows/fade-flow-pooled-hypothesis.yml'
   workflow_dispatch:
 
