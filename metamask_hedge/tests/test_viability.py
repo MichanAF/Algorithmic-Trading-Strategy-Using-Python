@@ -126,3 +126,36 @@ def test_tables_render(cfg):
     assert "viable" in ramp and "capital" in ramp
     dca = dca_table(cfg.venue, 1_200.0)
     assert "monthly" in dca and "quarterly" in dca
+
+
+def test_the_headline_threshold_never_contradicts_the_verdict(cfg):
+    # The bug this pins: a book could fail on the reserve check while the
+    # headline "needs about $X" quoted a number the account already cleared.
+    from mmhedge.viability import OperatingCosts
+    patient = OperatingCosts(gas_per_tx_usd=0.10, adjustments_per_year=4,
+                             transfers_per_year=2, withdrawals_per_year=1)
+    one = config_from_dict({"core": {"weights": {"BTC": 1.0}, "staked_pct": {}}})
+    for cap in (200, 400, 600, 1_000, 5_000):
+        v = assess_viability(one, float(cap), costs=patient)
+        if v.viable:
+            assert cap >= v.minimum_usd
+        else:
+            assert cap < v.minimum_usd
+
+
+def test_posting_full_collateral_removes_the_reserve_constraint():
+    from mmhedge.viability import OperatingCosts
+    patient = OperatingCosts(gas_per_tx_usd=0.10, adjustments_per_year=4,
+                             transfers_per_year=2, withdrawals_per_year=1)
+    base = {"core": {"weights": {"BTC": 1.0}, "staked_pct": {}}}
+    tiered = config_from_dict({**base, "hedge": {"leverage": 2.0}})
+    flat = config_from_dict({**base, "hedge": {"leverage": 1.9}})
+    assert assess_viability(tiered, 200.0, costs=patient).reserve_minimum_usd > 0.0
+    assert assess_viability(flat, 200.0, costs=patient).reserve_minimum_usd == 0.0
+    assert assess_viability(flat, 200.0, costs=patient).viable
+
+
+def test_the_reserve_check_suggests_the_fix(cfg):
+    v = assess_viability(cfg, 200.0)
+    detail = [c.detail for c in v.checks if c.label == "reserve_is_meaningful"][0]
+    assert "post the whole collateral up front" in detail

@@ -273,10 +273,31 @@ Two thresholds bind and the larger wins:
   minimum. A three-asset core makes this *worse*, because the smallest slice
   sets the floor.
 
+A third constraint binds too: a staged reserve smaller than a few withdrawal
+fees is not a reserve. At small size the fix is structural — drop to the
+survival leverage (~1.94x for +50%) so the whole collateral is posted up front
+and there is no second tier to move.
+
 Below the threshold the answer is not "run it smaller". It is: hold the spot,
 keep the rest in the Money Account, and turn the overlay on when the account
 has grown into it. **You give up the volatility reduction, not money you would
 otherwise have made.**
+
+### The threshold is mostly about discipline, not size
+
+The fixed costs are yours to choose. On a BTC-only core:
+
+| How you run it | Fixed/yr | Threshold |
+|---|---|---|
+| 12 adjustments, $0.50 gas | $11.00 | **$1,234** |
+| 4 adjustments, $0.50 gas | $4.50 | **$505** |
+| 4 adjustments, $0.10 gas (L2/Solana) | $1.70 | **$191** |
+| …and only hedging at 35% funding | $1.70 | **$82** |
+| 12 adjustments on Ethereum mainnet ($8 gas) | $146.00 | **$16,384** |
+
+Trading quarterly instead of monthly cuts the threshold by more than half.
+Running on mainnet raises it by an order of magnitude — at retail size the
+strategy is an L2/Solana strategy or it is nothing.
 
 ```bash
 python -m mmhedge viability --capital 200 --adding 1200
@@ -420,7 +441,7 @@ against it.
 | `configs/` | conservative / balanced / aggressive |
 
 ```bash
-python -m pytest tests/ -q        # 155 tests
+python -m pytest tests/ -q        # 158 tests
 ```
 
 ---

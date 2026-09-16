@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 from .checks import Check, all_passed, blockers, render
 from .config import StrategyConfig
-from .sizing import allocate
+from .sizing import allocate, margin_fraction_for_survival
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,7 @@ class ViabilityReport:
     min_order_usd: float
     economic_minimum_usd: float
     mechanical_minimum_usd: float
+    reserve_minimum_usd: float
     checks: tuple[Check, ...] = ()
 
     @property
@@ -83,8 +84,13 @@ class ViabilityReport:
 
     @property
     def minimum_usd(self) -> float:
-        """The binding threshold: whichever constraint is worse."""
-        return max(self.economic_minimum_usd, self.mechanical_minimum_usd)
+        """The binding threshold: whichever constraint is worse.
+
+        All three must be in here, or the report can contradict itself --
+        refusing an account for a reason the headline number does not mention.
+        """
+        return max(self.economic_minimum_usd, self.mechanical_minimum_usd,
+                   self.reserve_minimum_usd)
 
     @property
     def net_pct(self) -> float:
@@ -180,6 +186,15 @@ def assess_viability(cfg: StrategyConfig, capital_usd: float | None = None, *,
                       if clip_per_dollar > 0.0 else float("inf"))
     smallest_clip = clip_per_dollar * capital
 
+    # Reserve threshold: a staged reserve smaller than a few withdrawal fees
+    # cannot be moved economically, so it is not a reserve.  A book carrying no
+    # reserve at all -- leverage at or below the survival leverage, so the full
+    # collateral is posted up front -- is exempt, and at small size that is the
+    # better structure anyway.
+    min_reserve = venue.perp_withdrawal_fee_usd * 5
+    reserve_frac = alloc.reserve_usd / capital if capital else 0.0
+    reserve_min = (min_reserve / reserve_frac if reserve_frac > 0.0 else 0.0)
+
     checks = (
         Check("net_carry_positive", net > 0.0,
               f"{net:+,.2f} USD/yr after every cost"),
@@ -195,13 +210,15 @@ def assess_viability(cfg: StrategyConfig, capital_usd: float | None = None, *,
         Check("collateral_clears_minimum", collateral >= venue.perp_min_funding_usd,
               f"{collateral:,.2f} collateral vs {venue.perp_min_funding_usd:,.2f} "
               f"minimum funding"),
-        Check("reserve_is_meaningful", alloc.reserve_usd == 0.0
-              or alloc.reserve_usd >= venue.perp_withdrawal_fee_usd * 5,
+        Check("reserve_is_meaningful",
+              alloc.reserve_usd == 0.0 or alloc.reserve_usd >= min_reserve,
               f"reserve {alloc.reserve_usd:,.2f} vs a "
               f"{venue.perp_withdrawal_fee_usd:,.2f} withdrawal fee"
-              + ("" if alloc.reserve_usd == 0.0
-                 or alloc.reserve_usd >= venue.perp_withdrawal_fee_usd * 5
-                 else "; a top-up costs more to send than it delivers"),
+              + ("" if alloc.reserve_usd == 0.0 or alloc.reserve_usd >= min_reserve
+                 else f"; a top-up costs more to send than it delivers. Drop "
+                      f"leverage to "
+                      f"{1.0 / margin_fraction_for_survival(cfg.risk.survive_rally_pct, cfg.blended_maintenance_margin()):.2f}x "
+                      f"or below and post the whole collateral up front instead"),
               applicable=alloc.reserve_usd > 0.0),
     )
 
@@ -213,7 +230,7 @@ def assess_viability(cfg: StrategyConfig, capital_usd: float | None = None, *,
         fixed_costs_usd=fixed, net_usd=net, smallest_clip_usd=smallest_clip,
         min_order_usd=venue.perp_min_order_usd,
         economic_minimum_usd=economic_min, mechanical_minimum_usd=mechanical_min,
-        checks=checks,
+        reserve_minimum_usd=reserve_min, checks=checks,
     )
 
 
