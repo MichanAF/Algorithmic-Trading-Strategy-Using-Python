@@ -480,3 +480,33 @@ def test_report_prices_the_rows_against_a_venue_the_flag_names(monkeypatch, caps
     assert code == 0
     assert "too decided to enter (skew above the venue's 0.12)" in printed.out
     assert "cheap 0.437, dear 0.607" in printed.out       # Polymarket's own fee
+
+
+def test_every_exchange_the_data_layer_supports_is_offered_by_every_command():
+    """`fetch` kept its own hardcoded list, so binance-vision parsed on `watch`
+    and was rejected by `fetch` -- and a workflow step that needed it failed
+    silently behind continue-on-error. Both lists now come from data.py."""
+    from btc5m.data import EXCHANGES, _ENDPOINTS
+
+    assert EXCHANGES == tuple(sorted(_ENDPOINTS))
+    assert "binance-vision" in EXCHANGES
+
+    parser = build_parser()
+    offered = {}
+    for action in parser._subparsers._group_actions[0].choices.items():
+        name, sub = action
+        for arg in sub._actions:
+            if arg.dest == "exchange" and arg.choices:
+                offered[name] = tuple(sorted(arg.choices))
+    assert offered, "no command offers --exchange"
+    for name, choices in offered.items():
+        assert choices == EXCHANGES, f"{name} offers {choices}"
+
+
+def test_the_mirror_is_accepted_wherever_a_live_fetch_is_possible():
+    for argv in (["fetch", "--exchange", "binance-vision", "--interval", "1m"],
+                 ["fetch", "--exchange", "binance-vision", "--source", "api"],
+                 ["watch", "--exchange", "binance-vision"],
+                 ["settlement", "--exchange", "binance-vision"],
+                 ["backtest", "--exchange", "binance-vision"]):
+        build_parser().parse_args(argv)          # raises SystemExit if refused

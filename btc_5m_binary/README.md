@@ -1637,7 +1637,7 @@ btc5m/
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
 deploy/           Dockerfile, systemd units and the runbook for a small box
-tests/            527 tests
+tests/            529 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1647,7 +1647,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 527 passed
+python -m pytest tests/ -q      # 529 passed
 ```
 
 ---

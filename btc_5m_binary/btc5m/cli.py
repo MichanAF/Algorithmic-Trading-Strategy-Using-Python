@@ -33,7 +33,7 @@ from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
-from .data import (INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
+from .data import (EXCHANGES, INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
                    fetch_history, fetch_klines, load_csv, synthetic)
 from .venue import (POLYMARKET_BTC_5M, VENUES, MarketQuote, evaluate_market,
                     minimum_viable_stake)
@@ -78,8 +78,7 @@ PRESETS: dict[str, list[str]] = {
 def _add_data_args(p: argparse.ArgumentParser, reference: bool = True) -> None:
     src = p.add_argument_group("data source (pick one)")
     src.add_argument("--data", metavar="CSV", help="5-minute OHLCV CSV file")
-    src.add_argument("--exchange",
-                     choices=("binance", "binance-vision", "coinbase", "kraken"),
+    src.add_argument("--exchange", choices=EXCHANGES,
                      help="fetch recent closed 5m candles live "
                           "(binance-vision is Binance's public mirror, which "
                           "answers where api.binance.com is geo-blocked)")
@@ -916,8 +915,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_live)
 
     p = sub.add_parser("fetch", help="download closed candles to CSV")
-    p.add_argument("--exchange", default="binance",
-                   choices=("binance", "coinbase", "kraken"))
+    p.add_argument("--exchange", default="binance", choices=EXCHANGES,
+                   help="candle source (default: binance). binance-vision is "
+                        "Binance's public mirror, which answers where "
+                        "api.binance.com is geo-blocked; use it with --source api")
     p.add_argument("--symbol")
     p.add_argument("--interval", default="5m", choices=sorted(INTERVAL_SECONDS),
                    help="candle length (default 5m). 1m is binance only and "

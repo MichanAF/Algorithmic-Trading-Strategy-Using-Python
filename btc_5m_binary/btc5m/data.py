@@ -265,6 +265,12 @@ _ENDPOINTS = {
 _DEFAULT_SYMBOLS = {"binance": "BTCUSDT", "binance-vision": "BTCUSDT",
                     "coinbase": "BTC-USD", "kraken": "XBTUSD"}
 
+# The candle sources, for anything that offers them as a choice.  The CLI reads
+# this rather than listing them again: a mirror added here but not there is a
+# flag that parses everywhere except where it is needed, which is how
+# binance-vision reached a workflow step that could not run it.
+EXCHANGES = tuple(sorted(_ENDPOINTS))
+
 
 def fetch_klines(exchange: str = "binance", symbol: str | None = None,
                  limit: int = 1000, timeout: int = 20,

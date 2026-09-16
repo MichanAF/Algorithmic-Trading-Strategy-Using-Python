@@ -96,12 +96,25 @@ jobs:
       # the monthly archives are not.
       - name: Which reading did the venue settle on?
         if: always()
-        continue-on-error: true
         run: |
+          # This step must never fail the watch run -- the quotes are the
+          # deliverable and the venue's own resolution can lag -- but it must not
+          # fail quietly either.  continue-on-error reported success when the
+          # fetch was rejected outright, so the failure is announced here
+          # instead, as a warning on the run page.
+          set +e
           python -m btc5m fetch --source api --exchange binance-vision \
-            --interval 1m --limit 1000 -o recent-1m.csv | tail -2
+            --interval 1m --limit 1000 -o recent-1m.csv 2>&1 | tail -2
+          fetched=${PIPESTATUS[0]}
           python -m btc5m settlement --minute recent-1m.csv \
             --quotes quotes.csv 2>&1 | tee rules.log
+          scored=${PIPESTATUS[0]}
+          if [ "$fetched" -ne 0 ]; then
+            echo "::warning::no recent minute bars (exit $fetched); readings not scored"
+          elif [ "$scored" -ne 0 ]; then
+            echo "::warning::settlement scoring failed (exit $scored); see rules.log"
+          fi
+          exit 0
 
       - name: Keep the quotes
         if: always()
