@@ -329,7 +329,7 @@ def test_watch_refuses_a_venue_it_cannot_read(capsys):
         main(["watch", "--venue", "predict-fun-btc-5m", "--synthetic", "500"])
     # The default config names predict.fun, so a bare run is refused too.
     with pytest.raises(SystemExit, match="Pass --venue polymarket-btc-5m"):
-        main(["watch", "--synthetic", "500"])
+        main(["watch"])
 
 
 def test_watch_wires_the_offsets_the_output_and_the_config(monkeypatch, capsys, tmp_path):
@@ -351,7 +351,7 @@ def test_watch_wires_the_offsets_the_output_and_the_config(monkeypatch, capsys, 
     monkeypatch.setattr(cli, "Watcher", FakeWatcher)
     monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
     out = tmp_path / "q.csv"
-    code, printed = run(["watch", "--synthetic", "500", "--windows", "4",
+    code, printed = run(["watch", "--windows", "4",
                          "--venue", "polymarket-btc-5m",
                          "--offsets", "3,20", "--out", str(out)], capsys)
     assert code == 0
@@ -364,7 +364,8 @@ def test_watch_wires_the_offsets_the_output_and_the_config(monkeypatch, capsys, 
     # The config here is the default, which names the other venue: the run says
     # so instead of silently judging the gates against the wrong break-even.
     assert seen["cfg"].venue == "predict-fun-btc-5m"
-    assert "the config names predict-fun-btc-5m" in printed.out
+    assert "the config was built for predict-fun-btc-5m" in printed.out
+    assert "this venue implies 0.5175" in printed.out
     assert "break-even 0.5263 from the config" in printed.out   # the built-in default
     assert "0.0175 a share at 0.50" in printed.out
 
@@ -382,7 +383,7 @@ def test_watch_takes_the_venue_from_the_config_when_it_names_polymarket(monkeypa
 
     monkeypatch.setattr(cli, "Watcher", FakeWatcher)
     monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
-    code, printed = run(["watch", "--synthetic", "500", "--windows", "1",
+    code, printed = run(["watch", "--windows", "1",
                          "--config", config_path("polymarket-5m.json"),
                          "--out", str(tmp_path / "q.csv")], capsys)
     assert code == 0
@@ -510,3 +511,34 @@ def test_the_mirror_is_accepted_wherever_a_live_fetch_is_possible():
                  ["settlement", "--exchange", "binance-vision"],
                  ["backtest", "--exchange", "binance-vision"]):
         build_parser().parse_args(argv)          # raises SystemExit if refused
+
+
+def test_a_live_watcher_refuses_generated_bars():
+    """Watching the real market against invented history is meaningless, and
+    --synthetic was being silently ignored in favour of a live fetch."""
+    with pytest.raises(SystemExit, match="cannot run on generated bars"):
+        main(["watch", "--venue", "polymarket-btc-5m", "--synthetic", "500"])
+
+
+def test_the_venue_note_stays_quiet_when_an_override_has_aligned_the_fee(monkeypatch,
+                                                                        capsys, tmp_path):
+    """--set betting.fee_bps=175 makes a predict.fun config price Polymarket
+    correctly, and warning about it then is noise that reads as a fault."""
+    import btc5m.cli as cli
+
+    class FakeWatcher:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, windows=1):
+            return 0
+
+    monkeypatch.setattr(cli, "Watcher", FakeWatcher)
+    monkeypatch.setattr(cli, "PolymarketClient", lambda *a, **k: object())
+    code, printed = run(["watch", "--venue", "polymarket-btc-5m",
+                         "--config", config_path("fade-flow-pooled-5m.json"),
+                         "--set", "betting.fee_bps=175",
+                         "--windows", "1", "--out", str(tmp_path / "q.csv")], capsys)
+    assert code == 0
+    assert "break-even 0.5175 from the config" in printed.out
+    assert "wrong one" not in printed.out

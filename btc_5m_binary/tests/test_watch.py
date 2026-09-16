@@ -352,6 +352,94 @@ def test_the_real_engine_runs_end_to_end_on_synthetic_bars(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# the alert
+# --------------------------------------------------------------------------- #
+
+
+def approving(side=DOWN, p_model=0.561):
+    def planted(fs, i, now_ts=None):
+        return Signal(bar_index=i, ts=int(fs.series.ts[i]), price=100.0, side=side,
+                      conviction=0.93, p_model=p_model, break_even=0.5175,
+                      edge=p_model - 0.5175, expected_value=0.09, tradable=True)
+    return planted
+
+
+def alerting(tmp_path, **kw):
+    """A watcher whose books make DOWN the cheap side, sized for $1,000."""
+    books = {UP_TOKEN: FakeBook(0.55, 0.56, depth=300.0),
+             DOWN_TOKEN: FakeBook(0.43, 0.44, depth=420.0)}
+    cfg = config()
+    cfg.risk.starting_bankroll = 1000.0
+    cfg.risk.max_stake_pct = 0.0075
+    cfg.risk.min_stake = 5.0
+    said = []
+    w, clock = watcher(tmp_path, client=FakeClient(books=books), cfg=cfg,
+                       alert=True, **kw)
+    w.log = said.append
+    w.engine.evaluate = approving()
+    return w, said, clock
+
+
+def test_an_approved_bet_is_printed_in_full(tmp_path):
+    """Everything needed to act, because the entry budget is thirty seconds and
+    nobody should be doing arithmetic inside it."""
+    w, said, clock = alerting(tmp_path)
+    clock.sleep(5)                                     # five seconds into the window
+    obs = w.observe(START, 5)
+    assert obs.approved == "yes"
+    assert w.alerts == 1
+    alert = said[-1]
+    assert "BET NOW: DOWN" in alert
+    assert "buy          DOWN  at  0.44" in alert      # the raw ask, as a limit
+    assert "stake        $7" in alert and "shares" in alert
+    assert "fee included" in alert                     # the all-in cost, separately
+    assert "model says   56.1%" in alert
+    assert "depth        420 shares" in alert
+    assert "entry closes in 25s" in alert              # 30s budget, 5s elapsed
+    assert "polymarket.com/event/btc-updown-5m-" in alert
+    assert alert.startswith("\a")                      # the terminal bell
+
+
+def test_no_bet_is_called_outside_the_entry_budget(tmp_path):
+    """The 30-second budget is enforced by the timing condition, not by the
+    alert: at 45 seconds the engine refuses the bet, so nothing is called and
+    the countdown in an alert is always positive."""
+    w, said, clock = alerting(tmp_path, offsets=(45,))
+    clock.sleep(45)
+    obs = w.observe(START, 45)
+    assert obs.approved == "no"
+    assert w.alerts == 0
+    assert not any("BET NOW" in line for line in said)
+
+
+def test_nothing_is_printed_when_a_condition_fails(tmp_path):
+    w, said, _ = alerting(tmp_path)
+    # A model probability below the price fails the priced-edge condition.
+    w.engine.evaluate = approving(p_model=0.40)
+    obs = w.observe(START, 5)
+    assert obs.approved == "no"
+    assert w.alerts == 0
+    assert not any("BET NOW" in line for line in said)
+
+
+def test_the_alert_is_off_unless_asked_for(tmp_path):
+    w, said, _ = alerting(tmp_path)
+    w.alert = False
+    assert w.observe(START, 5).approved == "yes"
+    assert w.alerts == 0
+    assert not any("BET NOW" in line for line in said)
+
+
+def test_the_alert_counts_are_reported_across_a_session(tmp_path):
+    markets = {START + 300 * k: FakeMarket(START + 300 * k) for k in range(2)}
+    w, said, _ = alerting(tmp_path)
+    w.client.markets = markets
+    w.run(windows=2)
+    assert w.alerts == 6                               # two windows, three offsets
+    assert w.rows == 6
+
+
+# --------------------------------------------------------------------------- #
 # the CSV
 # --------------------------------------------------------------------------- #
 

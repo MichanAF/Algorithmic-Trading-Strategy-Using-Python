@@ -31,6 +31,13 @@ names the exact condition that stopped it.
 
 ---
 
+## Just want to place bets?
+
+[QUICKSTART.md](QUICKSTART.md) is the short path: one command that watches the
+live market and prints each bet in full when every condition passes, for you to
+place by hand. It holds no key and places nothing. Read the two unmeasured risks
+at the end of it first.
+
 ## Start with the arithmetic, not the indicators
 
 Over five minutes BTC is close to a coin flip. On the bundled test data the
@@ -1637,7 +1644,7 @@ btc5m/
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
 deploy/           Dockerfile, systemd units and the runbook for a small box
-tests/            529 tests
+tests/            536 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1647,7 +1654,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 529 passed
+python -m pytest tests/ -q      # 536 passed
 ```
 
 ---

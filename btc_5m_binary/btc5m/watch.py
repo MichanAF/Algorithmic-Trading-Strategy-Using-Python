@@ -89,6 +89,19 @@ def _iso(ts: int) -> str:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _note(obs: "Observation", text: str, limit: int = 300) -> None:
+    """Add a reason to a row without losing the one already there.
+
+    A window can fail in more than one way at once -- no market *and* no bars --
+    and the first draft overwrote the earlier reason with the later one, which
+    made a two-fault window look like a one-fault window.
+    """
+    text = text.strip()
+    if not text or text in obs.note:
+        return
+    obs.note = f"{obs.note}; {text}"[:limit] if obs.note else text[:limit]
+
+
 def append_row(path: str | Path, obs: Observation) -> Path:
     """Append one observation, writing the header if the file is new.
 
@@ -155,7 +168,8 @@ class Watcher:
                  reference: BarSeries | None = None,
                  now: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print,
+                 alert: bool = False):
         if not offsets:
             raise ValueError("at least one offset is needed")
         if any(o < 0 or o >= WINDOW_SECONDS for o in offsets):
@@ -172,7 +186,9 @@ class Watcher:
         self.log = log
         self.engine = SignalEngine(cfg)
         self.risk = RiskManager(cfg.risk, self.engine.break_even, self.engine.odds)
+        self.alert = alert
         self.rows = 0
+        self.alerts = 0
         self._series: BarSeries | None = None
         self._series_for: int | None = None   # the window the bars were fetched for
         self._market: PolyMarket | None = None
@@ -221,7 +237,45 @@ class Watcher:
         append_row(self.out, obs)
         self.rows += 1
         self.log(self._line(obs))
+        if self.alert and obs.approved == "yes":
+            self.alerts += 1
+            self.log(self._alert(obs, market))
         return obs
+
+    def _alert(self, obs: Observation, market: PolyMarket | None) -> str:
+        """The instruction, for a person placing the bet by hand.
+
+        Everything needed to act is on the screen, because the entry budget is
+        thirty seconds and nobody should be doing arithmetic inside it.  The
+        price shown is the ask including the venue's fee; the limit is the raw
+        ask, which is what the venue's own ticket asks for.
+        """
+        raw = obs.up_ask if obs.side == "UP" else obs.down_ask
+        shares = None if not raw or not obs.stake else obs.stake / raw
+        left = obs.window_start + self.rules.max_entry_seconds - obs.observed_ts
+        depth = obs.up_ask_depth if obs.side == "UP" else obs.down_ask_depth
+        lines = [
+            "",
+            "  " + "=" * 68,
+            f"  BET NOW: {obs.side}   window {obs.window_time} UTC",
+            "  " + "-" * 68,
+            f"    buy          {obs.side}  at  {raw:.2f}   (limit price)"
+            if raw else f"    buy          {obs.side}",
+            f"    stake        ${obs.stake:,.2f}"
+            + (f"  ->  {shares:.0f} shares" if shares else ""),
+            f"    all-in cost  {obs.price:.4f} a share, fee included"
+            if obs.price is not None else "",
+            f"    model says   {obs.p_model:.1%}   edge {obs.edge:+.1%}"
+            if obs.p_model is not None and obs.edge is not None else "",
+            f"    depth        {depth:.0f} shares at that ask" if depth else "",
+            # Always positive: the timing condition refuses the bet outside the
+            # entry budget, so an alert can only fire inside it.
+            f"    entry closes in {left}s",
+        ]
+        if market is not None and market.slug:
+            lines.append(f"    market       https://polymarket.com/event/{market.slug}")
+        lines += ["  " + "=" * 68, ""]
+        return "\a" + "\n".join(line for line in lines if line != "")
 
     def _market_at(self, start: int, obs: Observation) -> PolyMarket | None:
         """The window's market, fetched once per window and reused per offset."""
@@ -230,10 +284,10 @@ class Watcher:
                 self._market = self.client.market_for_window(start)
             except PolymarketError as exc:
                 self._market = None
-                obs.note = f"market: {exc}"[:200]
+                _note(obs, f"market: {exc}")
             self._market_for = start
-        if self._market is None and not obs.note:
-            obs.note = "no market at that slug"
+        if self._market is None:
+            _note(obs, "no market at that slug")
         if self._market is not None:
             obs.slug = self._market.slug
         return self._market
@@ -241,12 +295,12 @@ class Watcher:
     def _books(self, market: PolyMarket, obs: Observation) -> tuple[Book, Book] | None:
         up_token, down_token = market.token_for("Up"), market.token_for("Down")
         if up_token is None or down_token is None:
-            obs.note = f"outcomes are {market.outcomes}, not Up/Down"
+            _note(obs, f"outcomes are {market.outcomes}, not Up/Down")
             return None
         try:
             up, down = self.client.book(up_token), self.client.book(down_token)
         except PolymarketError as exc:
-            obs.note = f"book: {exc}"[:200]
+            _note(obs, f"book: {exc}")
             return None
         obs.up_bid, obs.up_ask = up.best_bid, up.best_ask
         obs.down_bid, obs.down_ask = down.best_bid, down.best_ask
@@ -255,7 +309,7 @@ class Watcher:
             obs.overround = round(up.best_ask + down.best_ask - 1.0, 6)
             obs.skew = round(abs(up.best_ask - down.best_ask) / 2.0, 6)
         else:
-            obs.note = obs.note or "a side has no asks"
+            _note(obs, "a side has no asks")
         return up, down
 
     def _signal_into(self, obs: Observation, start: int, market: PolyMarket | None,
@@ -272,7 +326,7 @@ class Watcher:
         fs = build_features(series, self.cfg, self.reference)
         warmup = self.engine.warmup_bars(fs)
         if index < warmup:
-            obs.note = obs.note or f"warm-up: {index} bars, {warmup} needed"
+            _note(obs, f"warm-up: {index} bars, {warmup} needed")
             return
         signal = self.engine.evaluate(fs, index, now_ts=obs.observed_ts)
         obs.side = signal.side_name
@@ -306,10 +360,10 @@ class Watcher:
                 self._series = self.fetch_series()
             except Exception as exc:                 # a feed can fail any way
                 self._series = None
-                obs.note = f"bars: {exc}"[:200]
+                _note(obs, f"bars: {exc}")
             self._series_for = start
         if self._series is None:
-            obs.note = obs.note or "no bars"
+            _note(obs, "no bars")
             return None
         return self._series
 

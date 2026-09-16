@@ -511,6 +511,11 @@ def _bar_feed(args):
     which it is from most cloud regions, and which would otherwise leave the
     flow gate with no taker volume at all.
     """
+    if getattr(args, "synthetic", None) is not None:
+        raise SystemExit(
+            "a live watcher cannot run on generated bars: --synthetic would be "
+            "watching the real market against invented history. Drop it to fetch "
+            "live candles, or pass --data FILE.csv for a dry run.")
     if getattr(args, "data", None):
         series = load_csv(args.data)
         print(f"bars      {args.data}: {len(series):,} static bars, last "
@@ -553,7 +558,8 @@ def cmd_watch(args) -> int:
             "Pass --venue polymarket-btc-5m, or a config that names it.")
     offsets = tuple(int(x) for x in args.offsets.split(",") if x.strip())
     watcher = Watcher(PolymarketClient(), cfg, _bar_feed(args), out=args.out,
-                      offsets=offsets, rules=rules, reference=_load_reference(args))
+                      offsets=offsets, rules=rules, reference=_load_reference(args),
+                      alert=args.alert)
     print(f"venue     {rules.name}   offsets {', '.join(f'+{o}s' for o in offsets)}")
     # The engine's break-even comes from the config's fee basis and the price
     # paid comes from the venue's own fee, so a mismatch is worth naming: it
@@ -562,17 +568,28 @@ def cmd_watch(args) -> int:
     print(f"break-even {cfg.break_even_probability():.4f} from the config; "
           f"the book is charged {rules.name}'s own fee "
           f"({rules.fee_per_share(0.5):.4f} a share at 0.50)")
-    if venue != cfg.venue:
-        print(f"          note: the config names {cfg.venue}, and its break-even "
-              f"is the one the gates are judged against here.")
+    # Only a real mismatch is worth flagging: --set betting.fee_bps can align a
+    # config with a venue it does not name, and then there is nothing to warn of.
+    implied = rules.effective_price(0.5)
+    if abs(cfg.break_even_probability() - implied) > 5e-4:
+        print(f"          note: the config was built for {cfg.venue}. Its "
+              f"break-even is {cfg.break_even_probability():.4f} and this venue "
+              f"implies {implied:.4f}, so the gates are judged against the "
+              f"wrong one. Fix it with --set betting.fee_bps.")
     print(f"writing   {args.out}")
     print("windows   until stopped" if args.windows == 0 else
           f"windows   {args.windows}  (about {args.windows * 5} minutes)")
+    if args.alert:
+        stake = cfg.risk.starting_bankroll * cfg.risk.max_stake_pct
+        print(f"alerts    on: a bet that clears every condition is printed in full. "
+              f"Stake ${stake:,.2f} of a ${cfg.risk.starting_bankroll:,.0f} bankroll.")
+        print("          This places nothing. You place it, by hand, on the venue.")
     print()
     rows = watcher.run(windows=args.windows)
     print()
-    print(f"{rows} rows written to {args.out}. "
-          f"`btc5m settle --quotes {args.out}` once the windows have ended.")
+    print(f"{rows} rows written to {args.out}"
+          + (f", {watcher.alerts} bet(s) called." if args.alert else ".")
+          + f" `btc5m settle --quotes {args.out}` once the windows have ended.")
     return 0
 
 
@@ -877,6 +894,10 @@ def build_parser() -> argparse.ArgumentParser:
                         f"(default: {','.join(str(o) for o in DEFAULT_OFFSETS)})")
     p.add_argument("--out", default="quotes.csv", metavar="CSV",
                    help="append observations here (default: quotes.csv)")
+    p.add_argument("--alert", action="store_true",
+                   help="print the bet in full, and ring the terminal bell, when "
+                        "every betting and risk condition passes. Places nothing: "
+                        "you place it by hand on the venue")
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("settle", help="fill in who won, for windows that ended")
