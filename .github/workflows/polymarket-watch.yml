@@ -89,6 +89,20 @@ jobs:
           python -m btc5m report --quotes quotes.csv \
             --config configs/fade-flow-pooled-5m.json 2>&1 | tee report.log
 
+      # Which of the four readings of Polymarket's settlement text matches what
+      # it actually paid.  Only a window where the readings disagree is evidence,
+      # so this accumulates slowly and every session should contribute.  The
+      # minute bars come from the mirror because they have to be recent, which
+      # the monthly archives are not.
+      - name: Which reading did the venue settle on?
+        if: always()
+        continue-on-error: true
+        run: |
+          python -m btc5m fetch --source api --exchange binance-vision \
+            --interval 1m --limit 1000 -o recent-1m.csv | tail -2
+          python -m btc5m settlement --minute recent-1m.csv \
+            --quotes quotes.csv 2>&1 | tee rules.log
+
       - name: Keep the quotes
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +112,7 @@ jobs:
             btc_5m_binary/quotes.csv
             btc_5m_binary/watch.log
             btc_5m_binary/report.log
+            btc_5m_binary/rules.log
           if-no-files-found: warn
 
       - name: Write the summary
@@ -111,6 +126,12 @@ jobs:
             echo
             echo '```'
             cat report.log 2>/dev/null || echo "(no report)"
+            echo '```'
+            echo
+            echo "### Which reading did the venue settle on?"
+            echo
+            echo '```'
+            cat rules.log 2>/dev/null || echo "(not scored this run)"
             echo '```'
             echo
             echo "<details><summary>Every reading</summary>"

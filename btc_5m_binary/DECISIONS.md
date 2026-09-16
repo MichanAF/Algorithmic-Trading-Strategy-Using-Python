@@ -617,3 +617,52 @@ materially on the bars the config bets, the options are to re-run the
 pre-registration against the venue's actual rule, to keep
 close_to_close and accept a known bias, or to stop. That is a strategy
 decision, not a measurement.
+
+### Measured: the settlement reading is worth 4 points of hit rate
+
+A year of real minute bars (the year ending 2026-09-13, already burned),
+105,119 complete windows, the pooled config's 4,246 signals, run
+35039612656:
+
+| rule | pays the other side, on the signals | hit rate | vs 52.00% |
+|---|---|---|---|
+| close_to_close | -- (the baseline) | 53.77% | +1.77% |
+| twap_window | 723 of 4,246 (17.0%) | 53.89% | +1.89% |
+| twap60_ends | 393 of 4,246 (9.3%) | 49.69% | -2.31% |
+| twap60_vs_open | 279 of 4,246 (6.6%) | 54.07% | +2.07% |
+
+Three readings leave the edge intact. One destroys it: under twap60_ends
+the signal wins 49.69%, below break-even and below a coin flip.
+
+The disagreement rate does not predict which. twap_window flips nearly
+twice as many windows as twap60_ends and costs nothing. What matters is
+where the flips land: of twap_window's flips 49.7% destroyed a win and of
+twap60_vs_open's 47.7%, against the 53.8% a random flip would destroy,
+while twap60_ends destroyed a win on 72.0% of its flips. That is the
+malign case, measured rather than feared. There is a structural reason
+available: twap60_ends is the only reading whose reference point is the
+average of the minute before the window -- the last minute of the bar the
+signal is fading -- so its baseline is correlated with the trigger by
+construction.
+
+The words favour the benign readings and the feed's name favours the
+malign one. The text compares a TWAP to "the price at the beginning of
+that range", and a price is not a TWAP, which points at twap_window or
+twap60_vs_open. But the named feed is a 60-second TWAP stream, and the
+obvious way to compare with it is to read it at both ends, which is
+twap60_ends. The best case and the worst case are the two most plausible
+readings, so this cannot be settled by reading.
+
+So it is now settled empirically instead: every `btc5m watch` session
+scores the four readings against windows the venue itself resolved.
+Disagreeing windows are 6% to 17% of all windows, so evidence arrives at
+a few a day and this is the strongest remaining argument for the box.
+
+**A decision for the user, once there is evidence.** If the venue turns
+out to settle on twap60_ends, the options are to stop, to re-run the
+pre-registration against that rule from scratch (the fresh years for this
+signal are spent, so this would need the three still-unread years and a
+new bar fixed in advance), or to switch to a venue that settles
+close-to-close. If it settles on either of the other two, nothing
+changes and the measured edge stands. No value should be chosen on this
+until the venue's own outcomes say which it is.

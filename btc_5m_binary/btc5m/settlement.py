@@ -284,7 +284,8 @@ def render_hit_rates(rows: Sequence[HitRate], break_even: float | None = None) -
     if not rows or not rows[0].bets:
         lines.append("  no bet window falls inside these minute bars")
         return "\n".join(lines)
-    lines += [f"  bets scored: {rows[0].bets:,}",
+    lines += [f"  signals scored: {rows[0].bets:,}  (tradable signals, before the "
+              f"risk layer's limits thin them into bets)",
               "", "  rule              hit rate" +
               ("     vs break-even" if break_even is not None else ""),
               "  " + "-" * (46 if break_even is not None else 30)]

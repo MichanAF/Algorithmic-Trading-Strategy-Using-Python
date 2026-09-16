@@ -230,7 +230,7 @@ def test_the_hit_rate_table_names_the_spread_and_what_it_means():
     prices = window_prices(two_windows())
     text = render_hit_rates(hit_rates(prices, {START: DOWN, START + 300: DOWN}),
                             break_even=0.5175)
-    assert "bets scored: 2" in text
+    assert "signals scored: 2" in text
     assert "close_to_close      0.00%" in text
     assert "twap_window        50.00%" in text
     assert "(+50.00 vs close-to-close)" in text

@@ -1439,6 +1439,55 @@ A minute bar is not a TWAP: the proxy is the minute's typical price,
 `(high + low + close) / 3`. These are estimates of the disagreement, and what
 they establish is its order of magnitude.
 
+#### Measured, and it is the difference between an edge and no edge
+
+A year of real minute bars, the year ending 2026-09-13, 105,119 complete
+windows, against the pooled config's 4,246 signals (4.04% of bars).
+[Run 35039612656.](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35039612656)
+
+| rule | pays the other side, on the signals | hit rate | vs 52.00% |
+|---|---|---|---|
+| `close_to_close` | — (the baseline) | 53.77% | **+1.77%** |
+| `twap_window` | 723 of 4,246 (17.0%) | 53.89% | **+1.89%** |
+| `twap60_ends` | 393 of 4,246 (9.3%) | **49.69%** | **−2.31%** |
+| `twap60_vs_open` | 279 of 4,246 (6.6%) | 54.07% | **+2.07%** |
+
+Three of the four readings leave the edge intact. One destroys it: under
+`twap60_ends` the signal wins 49.69% — below break-even, and below a coin
+flip.
+
+**And the disagreement rate does not predict which.** `twap_window` flips
+nearly twice as many windows as `twap60_ends` and costs nothing; the flips
+that matter are the ones that land on bets the signal got right. Decomposing
+them:
+
+| rule | flips | of those, flips that destroyed a win |
+|---|---|---|
+| `twap_window` | 723 | 49.7% |
+| `twap60_vs_open` | 279 | 47.7% |
+| `twap60_ends` | 393 | **72.0%** |
+
+A flip falling at random would destroy a win 53.8% of the time, the baseline
+hit rate. Two rules sit just under that, which is why they cost nothing.
+`twap60_ends` sits at 72%, which is why 9% of windows cost 4 points of hit
+rate. There is a structural reason available: `twap60_ends` is the only
+reading whose reference point is the average of the minute *before* the
+window — the last minute of the very bar the signal is fading — so its
+baseline is correlated with the trigger by construction.
+
+**The words favour the benign readings; the feed's name favours the malign
+one.** The text compares a TWAP to "the price at the beginning of that
+range", and a price is not a TWAP, which points at `twap_window` or
+`twap60_vs_open`. But the feed is a 60-second TWAP stream, and the obvious way
+to implement a comparison with it is to read it at both ends, which is
+`twap60_ends`. The two most plausible readings are the best case and the worst
+case, so this cannot be left to a reading.
+
+`btc5m watch` now settles it empirically: every session scores the four
+readings against windows the venue itself resolved. Only a window where the
+readings disagree is evidence, and those are 6% to 17% of windows, so the
+sample accumulates at a few a day.
+
 ### Running it on a box, which is a read-only service
 
 `deploy/` holds the whole recipe: a Dockerfile, three systemd units and a
