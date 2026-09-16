@@ -463,3 +463,20 @@ def test_settle_and_report_read_a_watch_csv(monkeypatch, capsys, tmp_path):
     code, printed = run(["report", "--quotes", str(path),
                          "--config", config_path("polymarket-5m.json")], capsys)
     assert "break-even at this venue: 0.517" in printed.out
+
+
+def test_report_prices_the_rows_against_a_venue_the_flag_names(monkeypatch, capsys, tmp_path):
+    """--venue decides which entry limit and fee the rows are judged by, so the
+    report can price one file against both venues without editing a config."""
+    from btc5m.watch import Observation, append_row
+
+    path = tmp_path / "q.csv"
+    append_row(path, Observation(window_start=1_789_481_100, window_time="t", offset=5,
+                                 observed_ts=1_789_481_105, up_ask=0.42, down_ask=0.59,
+                                 skew=0.085, bar_lag=0, side="FLAT", tradable="no"))
+    code, printed = run(["report", "--quotes", str(path),
+                         "--venue", "polymarket-btc-5m",
+                         "--config", config_path("polymarket-5m.json")], capsys)
+    assert code == 0
+    assert "too decided to enter (skew above the venue's 0.12)" in printed.out
+    assert "cheap 0.437, dear 0.607" in printed.out       # Polymarket's own fee

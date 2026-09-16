@@ -518,3 +518,49 @@ soonest, not by what is most interesting to build:
    close-to-close. Measurable from the minute bars already fetched.
 3. Only then a signer, in a separate hot wallet, keyed by a session key
    rather than the wallet's own key, with nothing in git.
+
+### The first live hour: the market is 8.5 points from even, not near it
+
+Twelve consecutive windows, 2026-09-15 23:05 to 00:05 UTC, 36 readings
+(run 35033962877). The rig is sound: both sides priced on every reading,
+no notes, bar lag 0 everywhere, and settle resolved all nine ended
+windows. api.binance.com was blocked from the runner as expected and the
+mirror answered.
+
+What the book looked like, by seconds into the window:
+
+| seconds in | cheap ask | dear ask | overround | median skew |
+|---|---|---|---|---|
+| +5s | 0.420 | 0.590 | +0.0100 | 0.085 |
+| +15s | 0.455 | 0.555 | +0.0100 | 0.065 |
+| +30s | 0.425 | 0.585 | +0.0100 | 0.085 |
+
+Read cheap and dear, not UP and DOWN: which named side is dear varies
+window to window, so a median of the UP column averages a dear side with
+a cheap one and describes nothing. The report was changed to say cheap
+and dear for exactly that reason.
+
+Three findings, in the order they matter.
+
+1. **The market is not near even.** Five seconds in, the typical window
+   is already 8.5 points off even; only 4 of 12 were within 5 points.
+   Three of the twelve were past the 12-point max_entry_skew limit at +5
+   seconds and could not have been entered at all.
+2. **So the whole question is which side the stack wants.** All in at
+   Polymarket's own fee, the cheap side at 0.420 needs 43.7% and the dear
+   side at 0.590 needs 60.7%. A 53% signal clears the first by nine
+   points and misses the second by eight. The edge does not need an even
+   market; it needs to be on the cheap side. `report` now asks that
+   directly: the signal fades the bar that just closed, so if the market
+   prices that move continuing, the fade side is the cheap one. Not yet
+   answered -- it needs windows where the gates actually fire.
+3. **The book is cheap to cross.** The overround was exactly one cent in
+   all 36 readings, the book one tick wide on both sides, with 172 to 611
+   shares at the touch. A $7.50 stake is 15 shares. Liquidity is not the
+   constraint at this size.
+
+No gate fired in twelve windows, which is the expected outcome and not a
+finding: the pooled config fires on about one bar in twenty, so twelve
+windows expect half a signal and produce none 58% of the time. Ten fired
+gates need roughly 230 windows, nineteen hours. A single workflow job
+caps at five hours, so the conditional measurement is the box's job.

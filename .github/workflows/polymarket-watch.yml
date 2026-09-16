@@ -8,9 +8,12 @@
 # test either, and no year of history is fetched, so no pre-registered run is
 # spent.
 #
-# An hour of windows is twelve bets at most -- an anecdote about the edge, but
-# enough to answer the quote question and to prove the pipeline works against
-# the live venue before it is deployed anywhere.
+# A push runs three windows: enough to prove the pipeline still works against
+# the live venue after a change, and cheap.  A manual run defaults to sixty
+# windows, five hours, which is the most a single job can hold.  Neither is
+# enough for the conditional question -- the pooled signal fires on about one
+# bar in twenty, so ten fired gates need roughly 230 windows -- and that is what
+# the always-on box in deploy/ is for.
 
 name: Polymarket quote watch
 
@@ -25,8 +28,8 @@ on:
   workflow_dispatch:
     inputs:
       windows:
-        description: five-minute windows to watch (12 is an hour)
-        default: "12"
+        description: five-minute windows to watch (12 is an hour, 60 is five)
+        default: "60"
       offsets:
         description: seconds into each window to read the book
         default: "5,15,30"
@@ -34,7 +37,7 @@ on:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 340          # sixty windows is five hours of watching
     defaults:
       run:
         working-directory: btc_5m_binary
@@ -68,7 +71,7 @@ jobs:
           python -m btc5m watch \
             --config configs/fade-flow-pooled-5m.json \
             --venue polymarket-btc-5m \
-            --windows "${WINDOWS:-12}" --offsets "${OFFSETS:-5,15,30}" \
+            --windows "${WINDOWS:-3}" --offsets "${OFFSETS:-5,15,30}" \
             --out quotes.csv 2>&1 | tee watch.log
           test ${PIPESTATUS[0]} -eq 0
 

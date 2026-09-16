@@ -320,6 +320,10 @@ class Watcher:
         head = (f"{obs.window_time} +{obs.offset:>2}s  "
                 f"UP {price(obs.up_bid)}/{price(obs.up_ask)}  "
                 f"DOWN {price(obs.down_bid)}/{price(obs.down_ask)}")
+        # The bar being faded, because the whole question is whether the market
+        # has priced that move already and which side is therefore dear.
+        bar = ("" if obs.bar_return is None
+               else f"  bar {obs.bar_return * 100:+.2f}%")
         if obs.side in ("UP", "DOWN"):
             body = (f"  {obs.side} p {obs.p_model:.3f}"
                     f" price {price(obs.price)} edge "
@@ -328,7 +332,7 @@ class Watcher:
         else:
             body = f"  {obs.reason or obs.note or 'no signal'}"
         lag = "" if obs.bar_lag in (None, 0) else f"  [bar lag {obs.bar_lag}s]"
-        return head + body + lag
+        return head + bar + body + lag
 
 
 # --------------------------------------------------------------------------- #
@@ -389,7 +393,22 @@ def _fmt(value: float | None, spec: str = ".3f") -> str:
     return "--" if value is None else format(value, spec)
 
 
-def render_report(rows: Sequence[dict[str, Any]], break_even: float | None = None) -> str:
+def _cheap_dear(row: dict[str, Any]) -> tuple[float, float] | None:
+    """(cheaper ask, dearer ask), or None if the row is not priced on both sides.
+
+    Which *named* side is dear varies window to window, so a median of the UP
+    column and a median of the DOWN column describe nothing: they average a
+    dear side with a cheap one. Cheap and dear are the direction-free pair, and
+    they are what a buyer actually faces.
+    """
+    up, down = row.get("up_ask"), row.get("down_ask")
+    if up is None or down is None:
+        return None
+    return (up, down) if up <= down else (down, up)
+
+
+def render_report(rows: Sequence[dict[str, Any]], break_even: float | None = None,
+                  rules: VenueRules | None = None) -> str:
     """What the quote was, and whether the signal's side was the dear one."""
     if not rows:
         return "no rows"
@@ -403,27 +422,79 @@ def render_report(rows: Sequence[dict[str, Any]], break_even: float | None = Non
                  f"rows with a note {len(thin)}   bar lag on {len(lagged)}")
     if windows:
         lines.append(f"span {_iso(min(windows))} -> {_iso(max(windows) + WINDOW_SECONDS)} UTC")
+    # A market further from even than the venue's entry limit cannot be bet at
+    # all, whatever the signal says, so it is a cost of the venue and not of
+    # the strategy.
+    if rules is not None and priced:
+        limit = rules.max_entry_skew
+        decided = [r for r in priced if (r.get("skew") or 0.0) > limit]
+        lines.append(f"already too decided to enter (skew above the venue's "
+                     f"{limit:.2f}): {len(decided)}/{len(priced)}"
+                     + (f" ({100.0 * len(decided) / len(priced):.0f}%)" if priced else ""))
     lines.append("")
 
     # 1. The quote itself, per offset.  The question is whether a window opens
     #    near even and how fast it stops being even.
     lines.append("the book, by seconds into the window")
-    lines.append("  offset  n   up ask   down ask   overround   skew   "
-                 "|  ask depth up/down")
+    lines.append("  offset  n   cheap ask   dear ask   overround   skew   "
+                 "|  ask depth, cheap/dear")
     for offset in sorted({r["offset"] for r in rows if r.get("offset") is not None}):
         at = [r for r in priced if r.get("offset") == offset]
-        if not at:
+        pairs = [pair for pair in (_cheap_dear(r) for r in at) if pair]
+        if not at or not pairs:
             continue
+        # Depth follows the price, not the name: the cheap side's depth is the
+        # depth of whichever side is cheap in that reading.
+        depths = []
+        for r in at:
+            pair = _cheap_dear(r)
+            if pair is None:
+                continue
+            up_first = (r["up_ask"] <= r["down_ask"])
+            depths.append((r["up_ask_depth"] if up_first else r["down_ask_depth"],
+                           r["down_ask_depth"] if up_first else r["up_ask_depth"]))
         lines.append(f"  +{offset:>3}s  {len(at):<3} "
-                     f"{_fmt(_med(r['up_ask'] for r in at), '.3f'):>7} "
-                     f"{_fmt(_med(r['down_ask'] for r in at), '.3f'):>10} "
+                     f"{_fmt(_med(c for c, _ in pairs), '.3f'):>10} "
+                     f"{_fmt(_med(d for _, d in pairs), '.3f'):>10} "
                      f"{_fmt(_med(r['overround'] for r in at), '+.4f'):>11} "
                      f"{_fmt(_med(r['skew'] for r in at), '.3f'):>6}   |  "
-                     f"{_fmt(_med(r['up_ask_depth'] for r in at), '.0f')}/"
-                     f"{_fmt(_med(r['down_ask_depth'] for r in at), '.0f')}")
+                     f"{_fmt(_med(c for c, _ in depths), '.0f')}/"
+                     f"{_fmt(_med(d for _, d in depths), '.0f')}")
     near = [r for r in priced if r.get("skew") is not None and r["skew"] <= 0.05]
     lines.append(f"  within 5 points of even: {len(near)}/{len(priced)}"
                  + (f" ({100.0 * len(near) / len(priced):.0f}%)" if priced else ""))
+    all_pairs = [pair for pair in (_cheap_dear(r) for r in priced) if pair]
+    if all_pairs and rules is not None:
+        cheap, dear = _med(c for c, _ in all_pairs), _med(d for _, d in all_pairs)
+        lines.append(f"  what each side needs to break even, all in: "
+                     f"cheap {rules.effective_price(cheap):.3f}, "
+                     f"dear {rules.effective_price(dear):.3f}")
+    lines.append("")
+
+    # The decisive question.  The signal fades the bar that just closed, so if
+    # the market prices that move continuing, the side the stack wants is the
+    # cheap one and an eight-point skew is a discount rather than a wall.
+    lines.append("the dear side, against the bar just closed")
+    paired = [r for r in priced
+              if r.get("bar_return") not in (None, 0.0)
+              and _cheap_dear(r) is not None
+              and r["up_ask"] != r["down_ask"]]
+    if not paired:
+        lines.append("  no reading has both a move to price and a two-sided book")
+    else:
+        same = [r for r in paired
+                if (r["up_ask"] > r["down_ask"]) == (r["bar_return"] > 0)]
+        other = [r for r in paired if r not in same]
+        share = 100.0 * len(same) / len(paired)
+        lines.append(f"  readings with a move to price: {len(paired)}")
+        lines.append(f"  the dear side is the way the bar moved: {len(same)}/{len(paired)} "
+                     f"({share:.0f}%)   median skew {_fmt(_med(r['skew'] for r in same))}")
+        lines.append(f"  the dear side is against it:            {len(other)}/{len(paired)} "
+                     f"({100.0 - share:.0f}%)   median skew {_fmt(_med(r['skew'] for r in other))}")
+        lines.append("  Above half means the market prices continuation, so the fade "
+                     "side is the cheap one.")
+        lines.append("  Below half means the fade is priced in and the edge is "
+                     "being bought at the dear price.")
     lines.append("")
 
     # 2. The same, split by whether the stack proposed a bet.  This is the
@@ -445,8 +516,25 @@ def render_report(rows: Sequence[dict[str, Any]], break_even: float | None = Non
         approved = [r for r in fired if r.get("approved") == "yes"]
         lines.append(f"  a positive edge at the real price: {len(positive)}/{len(fired)}"
                      f"   every condition passed: {len(approved)}/{len(fired)}")
+        # The direct form of the question above, once there are signals to ask it of.
+        wanted_cheap = []
+        for r in fired:
+            pair = _cheap_dear(r)
+            if pair is None or r["up_ask"] == r["down_ask"] or r.get("side") not in ("UP", "DOWN"):
+                continue
+            cheap_side = "UP" if r["up_ask"] <= r["down_ask"] else "DOWN"
+            wanted_cheap.append(r["side"] == cheap_side)
+        if wanted_cheap:
+            lines.append(f"  the side the stack wanted was the cheap one: "
+                         f"{sum(wanted_cheap)}/{len(wanted_cheap)}")
         if break_even is not None:
             lines.append(f"  break-even at this venue: {break_even:.4f}")
+    else:
+        # 4.4% of bars is the pooled config's rate, so a short session firing
+        # nothing is the expected outcome and not a finding.
+        lines.append("  No signal fired. At the pooled config's rate of about one "
+                     "bar in twenty, a session needs roughly 230 windows (nineteen "
+                     "hours) to expect ten.")
     lines.append("")
 
     # 3. Settled windows: was the side right, and what would it have paid?

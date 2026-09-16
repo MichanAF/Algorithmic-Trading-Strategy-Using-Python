@@ -224,6 +224,17 @@ def test_a_reading_records_both_books_and_the_bar(tmp_path):
     assert obs.side in ("UP", "DOWN", "FLAT") and obs.note == ""
 
 
+def test_the_log_line_shows_the_move_being_faded(tmp_path):
+    w, _ = watcher(tmp_path)
+    obs = w.observe(START, 5)
+    line = w._line(obs)
+    assert "UP 0.50/0.51" in line and "DOWN 0.48/0.49" in line
+    assert "bar " in line and "%" in line
+    # A row with no bars names no move rather than printing a placeholder.
+    obs.bar_return = None
+    assert "bar " not in w._line(obs)
+
+
 def test_a_lagging_bar_feed_is_recorded_not_hidden(tmp_path):
     """The bar closing at the window's start is the one the strategy fades. A
     feed one bar behind is measuring the previous window, and must say so."""
@@ -437,6 +448,81 @@ def observation(**over):
                 note="")
     base.update(over)
     return base
+
+
+def test_the_book_is_reported_cheap_and_dear_not_up_and_down():
+    """Which named side is dear varies window to window, so a median of the UP
+    column averages a dear side with a cheap one and describes nothing. Two
+    windows, opposite directions, identical prices: cheap is 0.42 in both."""
+    rows = [observation(up_ask=0.42, down_ask=0.59, skew=0.085),
+            observation(window_start=START + 300, up_ask=0.59, down_ask=0.42,
+                        skew=0.085)]
+    text = render_report(rows)
+    assert "cheap ask   dear ask" in text
+    assert "0.420" in text and "0.590" in text
+    assert "up ask" not in text
+
+
+def test_the_report_prices_each_side_all_in_when_it_knows_the_venue():
+    from btc5m.venue import POLYMARKET_BTC_5M
+
+    rows = [observation(up_ask=0.42, down_ask=0.59, skew=0.085)]
+    text = render_report(rows, rules=POLYMARKET_BTC_5M)
+    # 0.42 plus 0.07 x 0.42 x 0.58, and 0.59 plus 0.07 x 0.59 x 0.41.
+    assert "cheap 0.437, dear 0.607" in text
+
+
+def test_the_report_counts_readings_the_venue_would_refuse():
+    """A market further from even than the entry limit cannot be bet at all,
+    whatever the signal says: that is the venue's cost, not the strategy's."""
+    from btc5m.venue import POLYMARKET_BTC_5M
+
+    rows = [observation(skew=0.085), observation(offset=15, skew=0.285),
+            observation(offset=30, skew=0.125)]
+    text = render_report(rows, rules=POLYMARKET_BTC_5M)     # limit 0.12
+    assert "already too decided to enter (skew above the venue's 0.12): 2/3" in text
+    # Without a venue there is no limit to compare against, so it says nothing.
+    assert "too decided" not in render_report(rows)
+
+
+def test_the_report_asks_whether_the_dear_side_is_the_move_being_faded():
+    """The signal fades the bar that just closed. If the market prices that move
+    continuing, the side the stack wants is the cheap one."""
+    # Bar up, UP dear: the market prices continuation.
+    continuation = [observation(bar_return=0.004, up_ask=0.59, down_ask=0.42, skew=0.085),
+                    observation(window_start=START + 300, bar_return=-0.004,
+                                up_ask=0.42, down_ask=0.59, skew=0.085)]
+    text = render_report(continuation)
+    assert "the dear side is the way the bar moved: 2/2 (100%)" in text
+    assert "the fade side is the cheap one" in text
+    # Bar up, DOWN dear: the fade is already priced in.
+    priced_in = [observation(bar_return=0.004, up_ask=0.42, down_ask=0.59, skew=0.085)]
+    text = render_report(priced_in)
+    assert "the dear side is against it:            1/1 (100%)" in text
+
+
+def test_a_reading_with_no_move_or_no_two_sided_book_is_left_out_of_that_question():
+    rows = [observation(bar_return=None), observation(offset=15, bar_return=0.0),
+            observation(offset=30, bar_return=0.004, up_ask=0.5, down_ask=0.5)]
+    text = render_report(rows)
+    assert "no reading has both a move to price and a two-sided book" in text
+
+
+def test_the_report_says_why_a_short_session_fires_nothing():
+    """Zero signals in twelve windows is the likeliest outcome for a signal that
+    fires on one bar in twenty, so the report says so rather than implying the
+    strategy is broken."""
+    rows = [observation(tradable="no", side="FLAT", price=None, edge=None)]
+    text = render_report(rows)
+    assert "No signal fired" in text and "230 windows" in text
+
+
+def test_the_report_says_whether_the_wanted_side_was_the_cheap_one():
+    rows = [observation(side="UP", up_ask=0.42, down_ask=0.59),      # wanted cheap
+            observation(window_start=START + 300, side="UP", up_ask=0.59,
+                        down_ask=0.42)]                              # wanted dear
+    text = render_report(rows)
+    assert "the side the stack wanted was the cheap one: 1/2" in text
 
 
 def test_the_report_splits_the_quote_by_whether_the_gates_fired():

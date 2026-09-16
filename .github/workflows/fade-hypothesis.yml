@@ -35,6 +35,7 @@ on:
       - 'btc_5m_binary/btc5m/**'
       - '!btc_5m_binary/btc5m/polymarket.py'
       - '!btc_5m_binary/btc5m/predictfun.py'
+      - '!btc_5m_binary/btc5m/watch.py'
       - '.github/workflows/fade-hypothesis.yml'
   workflow_dispatch:
 

@@ -583,10 +583,12 @@ def cmd_settle(args) -> int:
 def cmd_report(args) -> int:
     """What the quote was when the gates fired, and what it would have paid."""
     rows = read_rows(args.quotes)
-    break_even = None
+    break_even, rules = None, None
     if getattr(args, "config", None) or getattr(args, "set", None):
-        break_even = _build_config(args).break_even_probability()
-    print(render_report(rows, break_even=break_even))
+        cfg = _build_config(args)
+        break_even = cfg.break_even_probability()
+        rules = VENUES[args.venue or cfg.venue]
+    print(render_report(rows, break_even=break_even, rules=rules))
     return 0
 
 
@@ -822,6 +824,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("report", help="was the market near even when the gates fired?")
     p.add_argument("--quotes", required=True, metavar="CSV",
                    help="a CSV written by `btc5m watch`")
+    p.add_argument("--venue", choices=sorted(VENUES), default=None,
+                   help="price the rows against this venue's rules "
+                        "(default: the one the config names)")
     _add_config_args(p)
     p.set_defaults(func=cmd_report)
 

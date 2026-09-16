@@ -1331,6 +1331,52 @@ question. Accumulating enough windows to answer the second is what a small
 always-on box is for, and the quote question is the one that can end the project
 in an afternoon.
 
+### What the first live hour said
+
+Twelve consecutive windows, 2026-09-15 23:05 to 2026-09-16 00:05 UTC, 36
+readings. [Run 35033962877.](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35033962877)
+
+The rig works: both sides priced on all 36 readings, **zero notes**, **bar lag 0
+everywhere**, and `settle` resolved all nine ended windows. `api.binance.com` was
+blocked as expected and the mirror answered, silently and correctly.
+
+The market is **not** near even.
+
+| seconds in | cheap ask | dear ask | overround | median skew |
+|---|---|---|---|---|
+| +5s | 0.420 | 0.590 | +0.0100 | 0.085 |
+| +15s | 0.455 | 0.555 | +0.0100 | 0.065 |
+| +30s | 0.425 | 0.585 | +0.0100 | 0.085 |
+
+Five seconds after a window opens, the typical market is already **8.5 points
+from even**, and only 4 of 12 windows were within 5 points. Three of the twelve
+were past the 12-point `max_entry_skew` limit at +5 seconds, so they could not
+have been entered at all. Depth was 172 to 611 shares at the touch, ample for a
+$7.50 stake, and the overround was exactly one cent in every single reading —
+the book is one tick wide on both sides, which is cheaper than predict.fun's
+two-cent fee before the taker fee is counted.
+
+**That turns the whole question into one question.** All in, at Polymarket's own
+fee:
+
+| | price | hit rate it needs |
+|---|---|---|
+| the cheap side | 0.420 | **43.7%** |
+| the dear side | 0.590 | **60.7%** |
+
+A 53% signal clears the cheap side by nine points and misses the dear side by
+eight. So the edge does not depend on the market being even — it depends on
+**which side the stack wants**. That is now the measurement, and `report` asks it
+directly: the signal fades the bar that just closed, so if the market is pricing
+that move continuing, the fade side is the cheap one.
+
+**No gate fired in twelve windows, and that is the expected outcome.** The pooled
+config fires on about one bar in twenty, so twelve windows expect half a signal
+and produce none 58% of the time. Ten fired gates need roughly 230 windows,
+nineteen hours. The conditional half of this measurement is therefore not
+something a workflow run can answer, which is the case for the box rather than a
+finding about the strategy.
+
 ### Running it on a box, which is a read-only service
 
 `deploy/` holds the whole recipe: a Dockerfile, three systemd units and a
@@ -1479,7 +1525,7 @@ btc5m/
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
 deploy/           Dockerfile, systemd units and the runbook for a small box
-tests/            496 tests
+tests/            505 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -1489,7 +1535,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 496 passed
+python -m pytest tests/ -q      # 505 passed
 ```
 
 ---
