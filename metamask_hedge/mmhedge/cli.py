@@ -7,6 +7,7 @@
     python -m mmhedge risk --capital 25000 --hedge 1.0 --price 95000
     python -m mmhedge compare --synthetic 8760       # overlay vs HODL vs neutral
     python -m mmhedge sweep --seeds 40               # is any of it robust?
+    python -m mmhedge viability --capital 200        # is my account big enough?
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from .data import load_csv, synthetic
 from .hedge import MarketState, decide
 from .risk import assess
 from .sizing import allocate
+from .viability import (OperatingCosts, assess_viability, dca_table,
+                        ramp_table)
 
 
 def _coerce(text: str):
@@ -227,6 +230,29 @@ def cmd_sweep(args) -> int:
     return 0
 
 
+def cmd_viability(args) -> int:
+    cfg = _build_config(args)
+    costs = OperatingCosts(
+        gas_per_tx_usd=args.gas,
+        adjustments_per_year=args.adjustments,
+        transfers_per_year=args.transfers,
+        withdrawals_per_year=args.withdrawals,
+        deposits_per_year=args.deposits)
+    capital = args.capital or cfg.capital_usd
+    print(assess_viability(cfg, capital, funding_apr=args.funding,
+                           avg_hedge_ratio=args.hedge, costs=costs,
+                           cash_floor_pct=args.cash_floor).report())
+    print()
+    print("as the account grows:")
+    print(ramp_table(cfg, funding_apr=args.funding, avg_hedge_ratio=args.hedge,
+                     costs=costs, cash_floor_pct=args.cash_floor))
+    if args.adding:
+        print()
+        print(f"adding ${args.adding:,.0f} a year to the core:")
+        print(dca_table(cfg.venue, args.adding, gas_per_tx_usd=args.gas))
+    return 0
+
+
 def cmd_config(args) -> int:
     print(json.dumps(to_dict(_build_config(args)), indent=2, default=str))
     return 0
@@ -314,6 +340,21 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--decision-hours", type=int, default=24)
     sw.add_argument("--cash-floor", type=float, default=0.10)
     sw.set_defaults(func=cmd_sweep)
+
+    vb = sub.add_parser("viability", help="is the account big enough to run this?")
+    _add_config_args(vb)
+    vb.add_argument("--cash-floor", type=float, default=0.10)
+    vb.add_argument("--funding", type=float, default=0.15, help="funding APR")
+    vb.add_argument("--hedge", type=float, default=0.50,
+                    help="average hedge ratio you expect to run")
+    vb.add_argument("--gas", type=float, default=0.50, help="gas per transaction")
+    vb.add_argument("--adjustments", type=int, default=12, help="hedge changes/yr")
+    vb.add_argument("--transfers", type=int, default=4, help="collateral moves/yr")
+    vb.add_argument("--withdrawals", type=int, default=2, help="withdrawals/yr")
+    vb.add_argument("--deposits", type=int, default=0, help="core top-ups/yr")
+    vb.add_argument("--adding", type=float, default=0.0,
+                    help="USD added to the core per year; prints cadence costs")
+    vb.set_defaults(func=cmd_viability)
 
     cf = sub.add_parser("config", help="print the resolved config")
     _add_config_args(cf)

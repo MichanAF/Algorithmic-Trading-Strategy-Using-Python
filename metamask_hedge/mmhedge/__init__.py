@@ -20,6 +20,7 @@ the hedge must survive, rather than from anyone's preference.
     hedge    -> what ratio right now, with the reasons attached
     risk     -> the margin ladder, priced before you need it
     compare  -> overlay vs HODL vs always-neutral, on the same series
+    viability-> whether the account is big enough to run any of it
 
 Start with ``python -m mmhedge --help``.
 
@@ -46,6 +47,8 @@ from .risk import LadderRung, MarginLadder, RiskReport, assess, build_ladder
 from .sizing import (Allocation, AssetSlice, allocate, leverage_for_survival,
                      liquidation_move, margin_fraction_for_survival)
 from .venue import METAMASK, MarginTier, MetaMaskVenue
+from .viability import (OperatingCosts, ViabilityReport, assess_viability,
+                        dca_drag, dca_table, ramp_table)
 
 __version__ = "1.0.0"
 
@@ -63,4 +66,6 @@ __all__ = [
     "Series", "synthetic", "load_csv",
     "BacktestResult", "Signals", "build_signals", "run_backtest", "compare",
     "render_table",
+    "OperatingCosts", "ViabilityReport", "assess_viability", "ramp_table",
+    "dca_drag", "dca_table",
 ]

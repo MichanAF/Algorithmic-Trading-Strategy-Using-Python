@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
     ["compare", "--synthetic", "2400", "--capital", "25000"],
     ["sweep", "--seeds", "2", "--hours", "2400"],
     ["config"],
+    ["viability", "--capital", "200"],
+    ["viability", "--capital", "25000", "--funding", "0.3"],
+    ["viability", "--capital", "200", "--adding", "1200", "--gas", "0.1"],
 ])
 def test_subcommands_exit_clean(argv, capsys):
     assert main(argv) == 0
@@ -66,3 +69,21 @@ def test_invalid_value_reports_rather_than_traces(capsys):
 def test_leverage_flag_changes_the_split(capsys):
     main(["plan", "--capital", "25000", "--leverage", "3.0"])
     assert "3x on the short" in capsys.readouterr().out
+
+
+def test_viability_says_no_at_two_hundred(capsys):
+    assert main(["viability", "--capital", "200"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT VIABLE" in out
+    assert "the overlay needs about" in out
+
+
+def test_viability_says_yes_at_twenty_five_thousand(capsys):
+    assert main(["viability", "--capital", "25000"]) == 0
+    assert "=> VIABLE" in capsys.readouterr().out
+
+
+def test_viability_prints_cadence_costs_when_asked(capsys):
+    assert main(["viability", "--capital", "200", "--adding", "1200"]) == 0
+    out = capsys.readouterr().out
+    assert "monthly" in out and "quarterly" in out

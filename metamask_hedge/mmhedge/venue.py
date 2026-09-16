@@ -130,6 +130,11 @@ class MetaMaskVenue:
     perp_deposit_fee_usd: float = 0.0
     perp_withdrawal_fee_usd: float = 1.00
     perp_min_funding_usd: float = 10.0
+    # Smallest perp order worth attempting.  MetaMask documents a $10 minimum
+    # to *fund* the account; Hyperliquid also enforces a per-market minimum
+    # order size, which varies.  $10 is a conservative stand-in -- check the
+    # market you actually trade before relying on a small clip filling.
+    perp_min_order_usd: float = 10.0
     perp_withdrawal_asset: str = "USDC"
     perp_withdrawal_chain: str = "Arbitrum"
     isolated_margin_only: bool = True

@@ -238,6 +238,70 @@ and forced trims by ~70%.
 
 ---
 
+## Is your account big enough?
+
+The strategy has two kinds of cost, and they behave very differently as the
+account shrinks.
+
+**Proportional costs** never go away but never dominate: collateral parked on
+HyperCore earns nothing while the same dollars would earn ~4% in mUSD — a drag
+of roughly 2% of hedged notional a year. Funding clears that bar easily.
+
+**Fixed costs** do not scale. Gas on every adjustment and the flat $1 perp
+withdrawal come to roughly $11 a year. That is a rounding error on $25,000 and
+it is the entire story on $200.
+
+```
+  capital      core     gross     drag    fixed    net/yr   net %     clip     verdict
+--------------------------------------------------------------------------------------
+      200       119      8.89    -2.46   -11.00     -4.61  -2.31%     5.93 net<0/gas/c
+      500       296     22.23    -6.15   -11.00      4.96  +0.99%    14.82         gas
+    1,000       593     44.46   -12.29   -11.00     20.93  +2.09%    29.64         gas
+    2,500     1,482    111.14   -30.73   -11.00     68.82  +2.75%    74.09      viable
+    5,000     2,964    222.28   -61.45   -11.00    148.64  +2.97%   148.18      viable
+   10,000     5,927    444.55  -122.90   -11.00    308.28  +3.08%   296.37      viable
+   25,000    14,818  1,111.39  -307.26   -11.00    787.20  +3.15%   740.92      viable
+```
+
+At $200 the plumbing eats **124% of gross carry**, and the mechanical
+constraint is even more decisive: the smallest ladder clip is **$5.93 against a
+$10 minimum order**, so the policy cannot place the trade it just decided on.
+Two thresholds bind and the larger wins:
+
+* **Economic** — gas and withdrawals must not eat more than 20% of gross carry.
+* **Mechanical** — the smallest per-asset ladder clip must clear the venue
+  minimum. A three-asset core makes this *worse*, because the smallest slice
+  sets the floor.
+
+Below the threshold the answer is not "run it smaller". It is: hold the spot,
+keep the rest in the Money Account, and turn the overlay on when the account
+has grown into it. **You give up the volatility reduction, not money you would
+otherwise have made.**
+
+```bash
+python -m mmhedge viability --capital 200 --adding 1200
+```
+
+### Adding to the core
+
+Every contribution is a swap, so it pays 0.875% plus gas. The percentage part
+is cadence-blind — $1,200 costs the same bought once or twelve times — but gas
+is per transaction:
+
+```
+cadence            per buy   cost each  per buy %  year cost  year drag  gas share
+----------------------------------------------------------------------------------
+monthly                100        1.48      1.48%      17.70      1.48%        34%
+every 2 months         200        2.45      1.23%      14.70      1.23%        20%
+quarterly              300        3.43      1.14%      13.70      1.14%        15%
+twice a year           600        6.35      1.06%      12.70      1.06%         8%
+```
+
+Batching saves only the gas. On an L2 that is a third of the drag and worth
+doing; on Ethereum mainnet it is most of it and worth doing properly.
+
+---
+
 ## What the numbers prove, and what they don't
 
 40 synthetic years, median across seeds:
@@ -294,6 +358,7 @@ python -m mmhedge hedge --funding 0.30 --trend -0.4
 python -m mmhedge risk --capital 25000 --hedge 1.0 --price 95000
 python -m mmhedge compare --synthetic 8760       # overlay vs HODL vs neutral
 python -m mmhedge sweep --seeds 40 --beta 0      # how much was the coupling?
+python -m mmhedge viability --capital 200        # is the account big enough?
 ```
 
 With real data — hourly `timestamp,price,funding` (or `funding_apr`):
@@ -349,12 +414,13 @@ against it.
 | `sizing.py` | the split, solved from the survivable rally |
 | `hedge.py` | the hedge ratio: two signals, three guards |
 | `risk.py` | risk conditions and the margin ladder |
+| `viability.py` | whether the account clears the fixed costs at all |
 | `backtest.py` | hour-by-hour, paying every fee |
 | `data.py` | hourly price *and* funding, correlated |
 | `configs/` | conservative / balanced / aggressive |
 
 ```bash
-python -m pytest tests/ -q        # 134 tests
+python -m pytest tests/ -q        # 155 tests
 ```
 
 ---
