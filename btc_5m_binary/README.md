@@ -1333,28 +1333,40 @@ in an afternoon.
 
 ### What the first live hour said
 
-Twelve consecutive windows, 2026-09-15 23:05 to 2026-09-16 00:05 UTC, 36
-readings. [Run 35033962877.](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35033962877)
+Two runs, 72 readings, **15 distinct windows** between 2026-09-15 23:05 and
+2026-09-16 00:20 UTC. They overlap by nine windows, so this is one hour of the
+market seen twice, not two independent hours.
+[Run 35033962877](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35033962877),
+[run 35035064820](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35035064820).
 
-The rig works: both sides priced on all 36 readings, **zero notes**, **bar lag 0
-everywhere**, and `settle` resolved all nine ended windows. `api.binance.com` was
-blocked as expected and the mirror answered, silently and correctly.
+The rig works, in both: both sides priced on all 72 readings, **zero notes**,
+**bar lag 0 everywhere**, and `settle` resolved every ended window.
+`api.binance.com` was blocked as expected and the mirror answered, silently and
+correctly.
 
 The market is **not** near even.
 
-| seconds in | cheap ask | dear ask | overround | median skew |
-|---|---|---|---|---|
-| +5s | 0.420 | 0.590 | +0.0100 | 0.085 |
-| +15s | 0.455 | 0.555 | +0.0100 | 0.065 |
-| +30s | 0.425 | 0.585 | +0.0100 | 0.085 |
+| seconds in | cheap ask | dear ask | overround | median skew, run 1 | run 2 |
+|---|---|---|---|---|---|
+| +5s | 0.420 | 0.590 | +0.0100 | 0.085 | 0.080 |
+| +15s | 0.455 | 0.555 | +0.0100 | 0.065 | 0.085 |
+| +30s | 0.425 | 0.585 | +0.0100 | 0.085 | 0.128 |
 
-Five seconds after a window opens, the typical market is already **8.5 points
-from even**, and only 4 of 12 windows were within 5 points. Three of the twelve
-were past the 12-point `max_entry_skew` limit at +5 seconds, so they could not
-have been entered at all. Depth was 172 to 611 shares at the touch, ample for a
-$7.50 stake, and the overround was exactly one cent in every single reading —
-the book is one tick wide on both sides, which is cheaper than predict.fun's
-two-cent fee before the taker fee is counted.
+Five seconds after a window opens, the typical market is already **8 to 8.5
+points from even**, and 28% of readings were within 5 points in both runs. Three
+of the twelve windows in the first run were past the 12-point `max_entry_skew`
+limit at +5 seconds, so they could not have been entered at all.
+
+**The overround was exactly one cent in all 72 readings.** The book is one tick
+wide on both sides, with 172 to 611 shares at the touch against a 15-share
+stake, so crossing it costs a cent and liquidity is not the constraint at this
+size. That is the one number here with enough repetition behind it to lean on.
+
+**The rest is a small sample, and the two runs show it.** At +30 seconds the
+median skew was 0.085 in one and 0.128 in the other — one below the venue's
+entry limit and one above it — on windows that mostly coincide. A twelve-window
+median moves that much on three windows of difference, so read the table as an
+order of magnitude and nothing finer.
 
 **That turns the whole question into one question.** All in, at Polymarket's own
 fee:

@@ -521,11 +521,12 @@ soonest, not by what is most interesting to build:
 
 ### The first live hour: the market is 8.5 points from even, not near it
 
-Twelve consecutive windows, 2026-09-15 23:05 to 00:05 UTC, 36 readings
-(run 35033962877). The rig is sound: both sides priced on every reading,
-no notes, bar lag 0 everywhere, and settle resolved all nine ended
-windows. api.binance.com was blocked from the runner as expected and the
-mirror answered.
+Two runs, 72 readings, 15 distinct windows between 2026-09-15 23:05 and
+00:20 UTC (runs 35033962877 and 35035064820). They overlap by nine
+windows, so this is one hour seen twice rather than two hours. The rig is
+sound in both: both sides priced on every reading, no notes, bar lag 0
+everywhere, and settle resolved every ended window. api.binance.com was
+blocked from the runner as expected and the mirror answered.
 
 What the book looked like, by seconds into the window:
 
@@ -555,9 +556,16 @@ Three findings, in the order they matter.
    prices that move continuing, the fade side is the cheap one. Not yet
    answered -- it needs windows where the gates actually fire.
 3. **The book is cheap to cross.** The overround was exactly one cent in
-   all 36 readings, the book one tick wide on both sides, with 172 to 611
+   all 72 readings, the book one tick wide on both sides, with 172 to 611
    shares at the touch. A $7.50 stake is 15 shares. Liquidity is not the
-   constraint at this size.
+   constraint at this size, and this is the one number here with enough
+   repetition behind it to lean on.
+4. **The sample is small and the two runs prove it.** At +30 seconds the
+   median skew was 0.085 in one run and 0.128 in the other -- one below
+   the venue's entry limit and one above it -- on windows that mostly
+   coincide. A twelve-window median moves that much on three windows of
+   difference. Every figure above except the overround is an order of
+   magnitude, not a measurement.
 
 No gate fired in twelve windows, which is the expected outcome and not a
 finding: the pooled config fires on about one bar in twenty, so twelve
