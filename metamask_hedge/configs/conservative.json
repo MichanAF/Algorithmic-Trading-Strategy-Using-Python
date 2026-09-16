@@ -1,0 +1,31 @@
+{
+  "name": "metamask-hedged-core-conservative",
+  "capital_usd": 25000.0,
+  "core": {
+    "weights": {"BTC": 0.70, "ETH": 0.30},
+    "staked_pct": {"ETH": 0.40},
+    "rebalance_with": "perp"
+  },
+  "hedge": {
+    "max_hedge_ratio": 1.00,
+    "leverage": 1.5,
+    "ladder_steps": 4,
+    "min_step": 0.15,
+    "use_maker_orders": true
+  },
+  "carry": {
+    "enter_apr": 0.20,
+    "full_apr": 0.60,
+    "exit_apr": 0.08,
+    "hold_safety_multiple": 4.0,
+    "min_hold_days": 3.0
+  },
+  "risk": {
+    "survive_rally_pct": 0.75,
+    "margin_call_at": 0.40,
+    "margin_urgent_at": 0.60,
+    "max_core_drawdown_pct": 0.30,
+    "max_single_asset_weight": 0.75,
+    "deleverage_cooldown_hours": 120
+  }
+}

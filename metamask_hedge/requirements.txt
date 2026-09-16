@@ -1,0 +1,8 @@
+# The engine needs numpy only.
+numpy>=1.24
+
+# Optional: YAML config files (JSON configs work without it).
+PyYAML>=6.0
+
+# Optional: running the test suite.
+pytest>=7.0
