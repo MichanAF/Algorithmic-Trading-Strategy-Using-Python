@@ -564,3 +564,48 @@ finding: the pooled config fires on about one bar in twenty, so twelve
 windows expect half a signal and produce none 58% of the time. Ten fired
 gates need roughly 230 windows, nineteen hours. A single workflow job
 caps at five hours, so the conditional measurement is the box's job.
+
+### Which price settles the bet, and why it may not be the one measured
+
+Polymarket's live market text says it resolves Up if "the TWAP of the time
+range specified in the title is greater than or equal to the price at the
+beginning of that range", on the btc-usd-twap-60s-streams feed. Every
+backtest in this repository settles on Binance 5-minute close-to-close.
+Those are not the same sentence, and the text admits four readings:
+
+| rule | compares |
+|---|---|
+| close_to_close | last price of the window vs the first -- what every number here assumes |
+| twap_window | the average over the window vs the price at its start -- the literal reading |
+| twap60_ends | the 60-second average at the end vs the 60 seconds before the start |
+| twap60_vs_open | the 60-second average at the end vs the price at the start |
+
+`btc5m settlement` measures all four from minute bars. Two things it
+reports, in that order, because the first is routinely misread:
+
+1. How often the rules pay different sides. This is not a loss. If the
+   paid side flips on a fraction f of windows independently of whether
+   the bet was right, a hit rate p becomes p - f(2p - 1): at 53% a 5%
+   flip rate costs a third of a point, and it takes a 21% flip rate to
+   erase a 1.3-point edge.
+2. The pooled config's own hit rate under each rule, on the windows it
+   bet. This is the number that decides it, because independence cannot
+   be assumed: the windows where the rules disagree are the close ones,
+   which is where a five-minute signal does its work.
+
+Every value in this strategy was chosen against close_to_close. If the
+venue settles on one of the others, those choices were made against the
+wrong target and the four pre-registered runs measured a bet nobody can
+place. That is the risk being quantified; it is not yet quantified.
+
+Which sentence the venue actually means is not settled by reading it
+again. `settlement --quotes` scores the four rules against windows the
+venue itself has resolved, as recorded by `btc5m watch`. Only a window
+where the rules disagree is evidence, so the sample accumulates slowly
+and this is another thing the always-on box is for.
+
+A choice for the user once the numbers are in: if the rules differ
+materially on the bars the config bets, the options are to re-run the
+pre-registration against the venue's actual rule, to keep
+close_to_close and accept a known bias, or to stop. That is a strategy
+decision, not a measurement.

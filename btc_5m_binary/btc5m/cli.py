@@ -12,6 +12,7 @@
     python -m btc5m watch    --windows 12 --out quotes.csv  # log the live quote, no orders
     python -m btc5m settle   --quotes quotes.csv           # fill in who won
     python -m btc5m report   --quotes quotes.csv           # was the market ever near even?
+    python -m btc5m settlement --minute y-1m.csv --data y.csv  # is it even the same bet?
     python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
     python -m btc5m fetch    --interval 1m --year -o btc_1m.csv      # minute bars for --minute
@@ -38,6 +39,10 @@ from .venue import (POLYMARKET_BTC_5M, VENUES, MarketQuote, evaluate_market,
                     minimum_viable_stake)
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
 from .polymarket import PolymarketClient, probe as probe_polymarket
+from .settlement import (compare as compare_settlement, hit_rates,
+                         render_comparison, render_hit_rates,
+                         render_venue_scores, score_against_venue,
+                         window_prices)
 from .watch import (DEFAULT_OFFSETS, Watcher, read_rows, render_report,
                     settle as settle_quotes)
 from .features import build_features
@@ -592,6 +597,65 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _bets_by_window(args, cfg) -> tuple[dict[int, int], int]:
+    """Every window the config would have bet, mapped to the side it would take.
+
+    A signal on the bar closing at ``t`` bets the window that opens at ``t``, so
+    the bar's own timestamp is the window's start.
+    """
+    from .features import build_features
+    from .signal import SignalEngine
+
+    series = load_csv(args.data)
+    fs = build_features(series, cfg, _load_reference(args), _load_minute(args))
+    engine = SignalEngine(cfg)
+    bets = {}
+    for i in range(engine.warmup_bars(fs), len(series) - 1):
+        signal = engine.evaluate(fs, i)
+        if signal.tradable:
+            bets[int(series.ts[i])] = signal.side
+    return bets, len(series)
+
+
+def cmd_settlement(args) -> int:
+    """How much the venue's settlement rule differs from the one every backtest used."""
+    if not args.minute:
+        raise SystemExit("settlement needs minute bars: --minute FILE.csv "
+                         "(fetch them with `fetch --interval 1m --year`)")
+    minute = load_csv(args.minute)
+    prices = window_prices(minute)
+    print(f"minute bars  {args.minute}: {len(minute):,} rows, "
+          f"{len(prices):,} complete five-minute windows")
+    if not len(prices):
+        raise SystemExit("no complete window in those minute bars; "
+                         "fetch them with `fetch --interval 1m`")
+    print()
+
+    bets, cfg = None, None
+    if args.data:
+        cfg = _build_config(args)
+        bets, bars = _bets_by_window(args, cfg)
+        print(f"config       {len(bets):,} of {bars:,} bars would have been bet "
+              f"({100.0 * len(bets) / max(bars, 1):.2f}%)")
+        print()
+    print(render_comparison(compare_settlement(
+        prices, bet_starts=None if bets is None else bets.keys())))
+
+    # The number that decides it: not how often the rules differ, but whether the
+    # side the strategy took is the one each rule pays.
+    if bets:
+        print()
+        print(render_hit_rates(hit_rates(prices, bets),
+                               break_even=cfg.break_even_probability()))
+
+    if args.quotes:
+        settled = {row["window_start"]: row["settled"] for row in read_rows(args.quotes)
+                   if row.get("settled") and row.get("window_start")}
+        print()
+        print(render_venue_scores(*score_against_venue(prices, settled)))
+    return 0
+
+
 def _parse_end(text: str) -> datetime:
     """A --end date, read as midnight UTC on that day.
 
@@ -829,6 +893,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: the one the config names)")
     _add_config_args(p)
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("settlement",
+                       help="does the venue's settlement rule pay the same side "
+                            "as the close-to-close the backtests assume?")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--quotes", metavar="CSV",
+                   help="a settled CSV from `btc5m watch`, to score the rules "
+                        "against what the venue actually paid")
+    p.set_defaults(func=cmd_settlement)
 
     p = sub.add_parser("live", help="price the open predict.fun window")
     _add_data_args(p)
