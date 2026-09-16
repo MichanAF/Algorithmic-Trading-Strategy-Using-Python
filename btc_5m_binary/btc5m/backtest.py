@@ -265,12 +265,18 @@ def resolve_outcome(entry: float, exit_: float, side: int, deadband_bps: float,
 def run_backtest(series: BarSeries, cfg: StrategyConfig,
                  reference: BarSeries | None = None,
                  features: FeatureSet | None = None,
-                 on_signal=None) -> BacktestResult:
-    """Walk the series bar by bar and return the full result."""
+                 on_signal=None,
+                 minute: BarSeries | None = None) -> BacktestResult:
+    """Walk the series bar by bar and return the full result.
+
+    ``minute`` is the optional 1-minute series the taker-flow gate reads when
+    its source is ``"1m"``; every other gate ignores it.
+    """
     cfg.validate()
     engine = SignalEngine(cfg)
     risk = RiskManager(cfg.risk, engine.break_even, engine.odds)
-    fs = features if features is not None else build_features(series, cfg, reference)
+    fs = (features if features is not None
+          else build_features(series, cfg, reference, minute=minute))
 
     b = cfg.betting
     horizon = b.horizon_bars

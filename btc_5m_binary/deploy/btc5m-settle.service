@@ -1,0 +1,25 @@
+# Fill in who won, for windows the venue has resolved, and print the report to
+# the journal.  Started by btc5m-settle.timer; reads only.
+
+[Unit]
+Description=btc5m: fill in settled windows and report (reads only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=btc5m
+Group=btc5m
+WorkingDirectory=/opt/btc5m/app
+ExecStart=/opt/btc5m/venv/bin/python -m btc5m settle --quotes /var/lib/btc5m/quotes.csv
+ExecStart=/opt/btc5m/venv/bin/python -m btc5m report --quotes /var/lib/btc5m/quotes.csv --config configs/fade-flow-pooled-5m.json
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/btc5m
