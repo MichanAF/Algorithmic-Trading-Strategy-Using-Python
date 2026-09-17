@@ -8,6 +8,7 @@
     python -m mmhedge compare --synthetic 8760       # overlay vs HODL vs neutral
     python -m mmhedge sweep --seeds 40               # is any of it robust?
     python -m mmhedge viability --capital 200        # is my account big enough?
+    python -m mmhedge venues --symbol PEPE           # MetaMask vs OKX, side by side
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .data import load_csv, synthetic
 from .hedge import MarketState, decide
 from .risk import assess
 from .sizing import allocate
+from .venue import VENUES, compare_venues
 from .viability import (OperatingCosts, assess_viability, dca_table,
                         ramp_table)
 
@@ -253,6 +255,29 @@ def cmd_viability(args) -> int:
     return 0
 
 
+def cmd_venues(args) -> int:
+    a, b = VENUES[args.a], VENUES[args.b]
+    lev = args.leverage or 2.0
+    print(compare_venues(a, b, args.symbol, lev))
+    print()
+    print(f"collateral to set aside per $1 of {args.symbol} hedged, "
+          f"sized to survive {args.survive:+.0%}:")
+    for v in (a, b):
+        frac = v.hedge_collateral_fraction(args.symbol, args.survive, lev)
+        if not v.cross_margin:
+            note = "isolated: the spot leg helps not at all, you fund it all"
+        elif frac == 0.0:
+            note = "spot backs the short, so the venue asks for nothing extra"
+        else:
+            note = "haircut too deep for the spot to keep up with the move"
+        print(f"  {v.name:<10} {frac:>7.1%}   {note}")
+    print()
+    print("the spot book is where a venue charges you; the margin model is")
+    print("where it protects you. They are different questions, and the "
+          "second is usually worth more.")
+    return 0
+
+
 def cmd_config(args) -> int:
     print(json.dumps(to_dict(_build_config(args)), indent=2, default=str))
     return 0
@@ -355,6 +380,15 @@ def build_parser() -> argparse.ArgumentParser:
     vb.add_argument("--adding", type=float, default=0.0,
                     help="USD added to the core per year; prints cadence costs")
     vb.set_defaults(func=cmd_viability)
+
+    vn = sub.add_parser("venues", help="compare two venues side by side")
+    _add_config_args(vn)
+    vn.add_argument("--a", default="metamask", choices=sorted(VENUES))
+    vn.add_argument("--b", default="okx", choices=sorted(VENUES))
+    vn.add_argument("--symbol", default="BTC")
+    vn.add_argument("--survive", type=float, default=0.50,
+                    help="rally the hedge must survive (default: 0.50)")
+    vn.set_defaults(func=cmd_venues)
 
     cf = sub.add_parser("config", help="print the resolved config")
     _add_config_args(cf)

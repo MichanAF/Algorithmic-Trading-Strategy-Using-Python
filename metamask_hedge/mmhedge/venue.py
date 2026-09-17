@@ -52,6 +52,13 @@ class MarginTier:
     maintenance_margin: float
     examples: tuple[str, ...] = ()
     verified: bool = True
+    # How hard a cross-margin venue discounts this asset when it is posted as
+    # collateral.  Majors are haircut lightly; illiquid tokens are haircut
+    # hard, and plenty of venues will not take them as collateral at all --
+    # which is a haircut of 1.0 and puts the position back in the isolated
+    # case however 'cross' the account claims to be.  This number, not the
+    # maintenance margin, is what decides whether a hedged meme pair survives.
+    collateral_haircut: float = 0.05
 
     def liquidation_move(self, leverage: float) -> float:
         """Adverse move, as a fraction of entry price, that liquidates.
@@ -88,26 +95,39 @@ class MarginTier:
 
 # Crypto tiers are Hyperliquid's published brackets.  The exact bracket varies
 # per market and with position size; these are the conservative end of each.
-MAJOR = MarginTier("major", 50.0, 0.01, ("BTC", "ETH"))
-LARGE = MarginTier("large", 20.0, 0.025, ("SOL", "HYPE", "XRP", "DOGE"))
-LONG_TAIL = MarginTier("long_tail", 10.0, 0.05, ("most alts",))
+MAJOR = MarginTier("major", 50.0, 0.01, ("BTC", "ETH"), collateral_haircut=0.05)
+LARGE = MarginTier("large", 20.0, 0.025, ("SOL", "HYPE", "XRP", "LINK"),
+                   collateral_haircut=0.10)
+LONG_TAIL = MarginTier("long_tail", 10.0, 0.05, ("most alts",),
+                       collateral_haircut=0.30)
+# Meme perps exist and are liquid on the majors, but the tier that matters is
+# not the margin bracket -- it is that the underlying routinely moves further
+# in a day than any sane short can survive.  See `squeeze_survival` below.
+MEME = MarginTier("meme", 10.0, 0.05, ("DOGE", "SHIB", "PEPE", "BONK", "WIF"),
+                  verified=False, collateral_haircut=0.40)
 NON_CRYPTO = MarginTier("non_crypto", 10.0, 0.05,
-                        ("NVDA", "TSLA", "COIN", "gold", "FX"), verified=False)
+                        ("NVDA", "TSLA", "COIN", "gold", "FX"), verified=False,
+                        collateral_haircut=0.20)
 
-TIERS: dict[str, MarginTier] = {t.name: t for t in (MAJOR, LARGE, LONG_TAIL, NON_CRYPTO)}
+TIERS: dict[str, MarginTier] = {
+    t.name: t for t in (MAJOR, LARGE, LONG_TAIL, MEME, NON_CRYPTO)}
 
 # Which tier a symbol lands in.  Anything unlisted falls to LONG_TAIL, which is
 # the safe direction to be wrong in.
 SYMBOL_TIERS: dict[str, str] = {
     "BTC": "major", "WBTC": "major", "CBBTC": "major",
     "ETH": "major", "WETH": "major", "STETH": "major", "WSTETH": "major",
-    "SOL": "large", "HYPE": "large", "XRP": "large", "DOGE": "large",
+    "SOL": "large", "HYPE": "large", "XRP": "large",
     "LINK": "large", "AVAX": "large", "BNB": "large",
+    # DOGE is large-cap and liquid, but it trades like a meme coin and a real
+    # venue haircuts it accordingly. The conservative tier is the right one.
+    "DOGE": "meme", "SHIB": "meme", "PEPE": "meme", "BONK": "meme",
+    "WIF": "meme", "FLOKI": "meme", "PENGU": "meme", "SPX": "meme",
 }
 
 
 @dataclass(frozen=True)
-class MetaMaskVenue:
+class Venue:
     """Costs and rules for the MetaMask instrument set.
 
     Overridable from config, because every one of these is a number someone
@@ -138,6 +158,17 @@ class MetaMaskVenue:
     perp_withdrawal_asset: str = "USDC"
     perp_withdrawal_chain: str = "Arbitrum"
     isolated_margin_only: bool = True
+    # Cross margin with spot as collateral is the single biggest structural
+    # difference between venues, and it is worth more than any fee.  When the
+    # spot leg backs the short, a rally that hurts the short is paid for by the
+    # spot gain *inside the same margin account*, and the delta-neutral pair
+    # stops being liquidatable by ordinary moves.
+    cross_margin: bool = False
+    # Discount the venue applies to crypto posted as collateral.  0.05 means
+    # BTC counts for 95 cents on the dollar.  Illiquid tokens are haircut far
+    # harder, and many venues will not accept them as collateral at all --
+    # which silently puts you back in the isolated case.
+    collateral_haircut: float = 0.05
 
     # -- funding ----------------------------------------------------------- #
     # F = premium + clamp(interest - premium, -0.0005, 0.0005), sampled every
@@ -167,6 +198,72 @@ class MetaMaskVenue:
 
     def liquidation_move(self, symbol: str, leverage: float) -> float:
         return self.tier_for(symbol).liquidation_move(leverage)
+
+    def hedge_collateral_fraction(self, symbol: str, survive_rally: float,
+                                  leverage: float = 2.0) -> float:
+        """Collateral to set aside per dollar of hedge notional.
+
+        Under **isolated** margin the spot leg is irrelevant and you must fund
+        the whole survivable move yourself: ``r(1+m) + m``, which is 51.5% to
+        reach +50% on BTC.
+
+        Under **cross** margin the spot leg is already posted, and it gains
+        exactly what the short loses. Requiring equity at the target move::
+
+            (1-h)N(1+r) - N*r + X  >=  m*N*(1+r)
+            X/N  >=  m(1+r) - (1-h)(1+r) + r
+
+        For a major that is negative at any sane target -- the haircut spot
+        covers the perp's margin many times over -- so the answer is zero and
+        essentially all of the capital can sit in the core. For a meme coin at
+        a +200% target it is about 35%, because the haircut is 40% and the
+        collateral stops keeping up.
+
+        This is the single largest capital-efficiency difference between the
+        two venues, and it is much bigger than any fee on this page.
+        """
+        tier = self.tier_for(symbol)
+        m = tier.maintenance_margin
+        if not self.cross_margin:
+            return tier.margin_fraction_for_survival(survive_rally)
+        h = max(tier.collateral_haircut, self.collateral_haircut)
+        if h >= 1.0:                      # not accepted as collateral at all
+            return tier.margin_fraction_for_survival(survive_rally)
+        r = survive_rally
+        return max(0.0, m * (1.0 + r) - (1.0 - h) * (1.0 + r) + r)
+
+    def hedged_liquidation_move(self, symbol: str, leverage: float) -> float:
+        """Where a *delta-neutral pair* dies, which is a different question.
+
+        Under isolated margin the spot leg is irrelevant, so this is just the
+        short's own liquidation point.
+
+        Under cross margin with the spot posted as collateral, equity is
+        ``(1-h)*N*(1+r) - N*r`` against a requirement of ``m*N*(1+r)``, so::
+
+            r = (1 - h - m) / (h + m)
+
+        With a 5% haircut on BTC that is about +1567%: the pair is effectively
+        unliquidatable by price. With a 40% haircut on an illiquid token it is
+        about +122% -- which a meme coin can and does do.
+
+        The catch that is easy to miss: if the venue will not accept that token
+        as collateral at all, the haircut is 100% and you are back to the
+        isolated case however 'cross' the account claims to be.
+        """
+        tier = self.tier_for(symbol)
+        m = tier.maintenance_margin
+        if not self.cross_margin:
+            return self.liquidation_move(symbol, leverage)
+        # The tier's own haircut wins: posting PEPE as collateral is nothing
+        # like posting BTC, and a venue-wide number hides exactly that.
+        h = max(tier.collateral_haircut, self.collateral_haircut)
+        if h >= 1.0:
+            return self.liquidation_move(symbol, leverage)
+        denom = h + m
+        if denom <= 0.0:
+            return float("inf")
+        return (1.0 - h - m) / denom
 
     # ------------------------------------------------------------------ #
     # cost of moving exposure
@@ -250,7 +347,7 @@ class MetaMaskVenue:
         """What ETH staking pays you after MetaMask keeps its 15%."""
         return gross_apr * (1.0 - self.staking_fee_share)
 
-    def with_overrides(self, **kwargs) -> "MetaMaskVenue":
+    def with_overrides(self, **kwargs) -> "Venue":
         return replace(self, **kwargs)
 
     def summary(self) -> str:
@@ -278,8 +375,68 @@ class MetaMaskVenue:
             lines.append(
                 f"  tier {t.name:<10} max {t.max_leverage:>4.0f}x, "
                 f"maintenance {t.maintenance_margin:.2%}, "
+                f"collateral haircut {t.collateral_haircut:.0%}, "
                 f"3x short survives {t.liquidation_move(3.0):+.1%}{flag}")
         return "\n".join(lines)
 
 
-METAMASK = MetaMaskVenue()
+MetaMaskVenue = Venue          # back-compat: the dataclass is venue-shaped
+
+
+METAMASK = Venue()
+
+# OKX, VIP0 retail tier, September 2026.  Two things flip versus MetaMask: spot
+# is nearly nine times cheaper, and the unified account posts spot as collateral
+# for the perp.  One thing flips the other way: the perp itself costs more, and
+# there is no maker rebate.
+OKX = Venue(
+    name="okx",
+    swap_fee_pct=0.0010,           # 0.10% spot taker (0.08% maker)
+    swap_slippage_pct=0.0005,      # deep books on majors
+    spot_gas_usd=0.0,              # internal trades: no chain, no gas
+    perp_taker_pct=0.0005,         # 0.05%
+    perp_maker_pct=0.0002,         # 0.02% -- a cost, not a rebate
+    perp_withdrawal_fee_usd=0.0,   # moving between internal accounts is free
+    perp_min_funding_usd=0.0,
+    perp_min_order_usd=5.0,
+    isolated_margin_only=False,
+    cross_margin=True,
+    collateral_haircut=0.05,
+    funding_interval_hours=8.0,    # vs Hyperliquid's hourly stamp
+    # Simple Earn flexible USDT, order of magnitude. Variable and unverified;
+    # left non-zero deliberately, because scoring OKX with no cash yield would
+    # hand it a free win on every opportunity-cost comparison in this package.
+    musd_apy=0.03,
+)
+
+VENUES: dict[str, Venue] = {"metamask": METAMASK, "okx": OKX}
+
+
+def compare_venues(a: Venue, b: Venue, symbol: str = "BTC",
+                   leverage: float = 2.0) -> str:
+    """The side-by-side that decides where to run the book."""
+    rows = [
+        ("spot round trip", lambda v: f"{v.spot_cost_pct(round_trip=True):.3%}"),
+        ("perp round trip (taker)",
+         lambda v: f"{v.perp_cost_pct(round_trip=True):.3%}"),
+        ("perp round trip (maker)",
+         lambda v: f"{v.perp_cost_pct(maker=True, round_trip=True):+.3%}"),
+        ("funding cadence", lambda v: f"{v.funding_interval_hours:g}h"),
+        ("margin model",
+         lambda v: "cross, spot as collateral" if v.cross_margin else "isolated only"),
+        (f"{leverage:g}x short alone liquidates",
+         lambda v: f"{v.liquidation_move(symbol, leverage):+.1%}"),
+        ("delta-neutral pair liquidates",
+         lambda v: ("never (by price)"
+                    if v.hedged_liquidation_move(symbol, leverage) > 5.0
+                    else f"{v.hedged_liquidation_move(symbol, leverage):+.0%}")),
+        ("idle cash yield", lambda v: f"{v.musd_apy:.2%}"),
+        ("custody", lambda v: "self" if v.name == "metamask" else "exchange"),
+    ]
+    width = max(len(r[0]) for r in rows) + 2
+    lines = [f"{symbol} at {leverage:g}x",
+             f"{'':<{width}} {a.name:>26} {b.name:>26}",
+             "-" * (width + 54)]
+    for label, fn in rows:
+        lines.append(f"{label:<{width}} {fn(a):>26} {fn(b):>26}")
+    return "\n".join(lines)

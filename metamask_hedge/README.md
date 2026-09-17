@@ -323,6 +323,117 @@ doing; on Ethereum mainnet it is most of it and worth doing properly.
 
 ---
 
+## Which venue: MetaMask or OKX?
+
+The fee schedules point in opposite directions, so they do not settle it:
+
+```
+BTC at 2x
+                                              metamask                        okx
+spot round trip                                 1.950%                     0.300%
+perp round trip (taker)                         0.070%                     0.100%
+perp round trip (maker)                        -0.020%                    +0.040%
+funding cadence                                     1h                         8h
+margin model                             isolated only  cross, spot as collateral
+2x short alone liquidates                       +48.5%                     +48.5%
+delta-neutral pair liquidates                     +49%           never (by price)
+idle cash yield                                  4.00%                      3.00%
+custody                                           self                   exchange
+```
+
+OKX's spot is ~6× cheaper; MetaMask's perp is cheaper and pays a maker rebate.
+Since this strategy moves the perp constantly and the spot almost never, the fee
+table mildly favours MetaMask.
+
+**The margin model overturns that completely.** OKX's unified account posts your
+spot as collateral for the perp, so the spot leg's gain in a rally pays for the
+short's loss *inside the same margin account*. The delta-neutral pair stops
+being liquidatable by price:
+
+```
+collateral to set aside per $1 of BTC hedged, sized to survive +50%:
+  metamask     51.5%   isolated: the spot leg helps not at all, you fund it all
+  okx           0.0%   spot backs the short, so the venue asks for nothing extra
+```
+
+That is the whole ballgame. On MetaMask you can put **59.3%** of capital in the
+core; on OKX, **90%** — same risk target, half again as much working capital —
+and `sizing.py`, the margin ladder and the staged reserve all exist to solve a
+problem OKX simply does not have.
+
+It also demolishes the small-account problem, because internal trades cost no
+gas and moving collateral costs no withdrawal fee:
+
+| | MetaMask | OKX |
+|---|---|---|
+| Viability threshold | **$1,234** | **$25** |
+| Net carry on $200/yr | −$4.58 | +$8.82 |
+
+The honest counterweights, which are not small: **custody** (OKX holds your
+coins; MetaMask does not), **availability** (OKX is restricted in some
+jurisdictions, and KYC applies), and **the single haircut assumption** — if the
+venue will not accept your token as collateral at all, the haircut is 100% and
+you are back in the isolated case however "cross" the account claims to be.
+
+```bash
+python -m mmhedge venues --symbol BTC
+python -m mmhedge plan --capital 25000 --set venue=okx
+```
+
+---
+
+## Meme coins: what the arithmetic says
+
+Adding meme coins to a hedged core is the case where every number in this
+package turns against you at once.
+
+**First, a hedge cannot "increase risk".** Risk comes from what the core holds;
+the overlay only ever reduces it. Putting meme coins in a hedged book is two
+separate decisions — a riskier core, and a hedge on top — and they should be
+argued separately.
+
+**Second, the collateral maths collapses.** A meme coin is haircut ~40% as
+collateral against a major's 5%, and it can move further in a day than any sane
+short survives:
+
+| Target | MetaMask (isolated) | OKX (cross) |
+|---|---|---|
+| Collateral per $1 of PEPE hedged, surviving +200% | **215%** | **35%** |
+| Delta-neutral pair liquidates at | +43% | +122% |
+
+215% means posting more than twice the position's value to hold it — the trade
+does not exist. Even OKX's +122% is a level meme coins genuinely reach.
+
+**Third, and worst — on isolated margin the hedge does not survive to do its
+job.** Backtesting a 160%-vol core, 12 synthetic years:
+
+```
+strategy                med CAGR  med vol   med DD  liq (12y)  delev/yr
+core only (HODL)          -25.0%    83.7%    62.8%          0         0
+hedged overlay             -7.4%    52.3%    51.9%          0        33
+always delta-neutral       -8.9%    50.9%    61.3%          0        30
+```
+
+Read the neutral row against the BTC equivalent, where it posts **0.2% vol and
+1.1% drawdown**. Here it posts **50.9% vol and 61.3% drawdown** — against 62.8%
+for simply holding the thing unhedged. Forced deleveraging tears the hedge off
+roughly thirty times a year, so the position is net long for most of every
+squeeze. **You pay the full cost of hedging and receive almost none of the
+protection.**
+
+If you want meme exposure, the arithmetic says hold it as a small, explicitly
+speculative, *unhedged* sleeve sized as money you can lose — not as core in a
+book whose machinery assumes the hedge stays on. The delta-neutral meme funding
+farm is a real strategy, but it needs cross margin, size, and active attention,
+and it is not the first strategy to run.
+
+One modelling limitation to state plainly: **the backtest models isolated margin
+only.** The cross-margin advantage above is computed in `venue.py`, not
+simulated hour by hour, so the OKX meme numbers would be better than the table
+shows — but the direction of the finding does not change.
+
+---
+
 ## What the numbers prove, and what they don't
 
 40 synthetic years, median across seeds:
@@ -380,6 +491,7 @@ python -m mmhedge risk --capital 25000 --hedge 1.0 --price 95000
 python -m mmhedge compare --synthetic 8760       # overlay vs HODL vs neutral
 python -m mmhedge sweep --seeds 40 --beta 0      # how much was the coupling?
 python -m mmhedge viability --capital 200        # is the account big enough?
+python -m mmhedge venues --symbol PEPE --survive 2.0  # MetaMask vs OKX
 ```
 
 With real data — hourly `timestamp,price,funding` (or `funding_apr`):
@@ -430,7 +542,7 @@ against it.
 
 | File | What it decides |
 |---|---|
-| `venue.py` | what MetaMask and Hyperliquid charge; margin tiers; the funding formula |
+| `venue.py` | what each venue charges; margin tiers and collateral haircuts; funding |
 | `carry.py` | break-even and minimum hold — the "how long?" arithmetic |
 | `sizing.py` | the split, solved from the survivable rally |
 | `hedge.py` | the hedge ratio: two signals, three guards |
@@ -441,7 +553,7 @@ against it.
 | `configs/` | conservative / balanced / aggressive |
 
 ```bash
-python -m pytest tests/ -q        # 158 tests
+python -m pytest tests/ -q        # 176 tests
 ```
 
 ---

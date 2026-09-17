@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from .venue import MetaMaskVenue
+from .venue import VENUES, Venue
 
 
 @dataclass
@@ -153,7 +153,7 @@ class CashParams:
 class StrategyConfig:
     name: str = "metamask-hedged-core"
     capital_usd: float = 10_000.0
-    venue: MetaMaskVenue = field(default_factory=MetaMaskVenue)
+    venue: Venue = field(default_factory=Venue)
     core: CoreParams = field(default_factory=CoreParams)
     hedge: HedgeParams = field(default_factory=HedgeParams)
     carry: CarryParams = field(default_factory=CarryParams)
@@ -247,13 +247,27 @@ def _merge(target: Any, patch: dict) -> Any:
     return target
 
 
+def _venue_preset(name: str) -> Venue:
+    key = str(name).strip().lower()
+    if key not in VENUES:
+        raise ValueError(
+            f"unknown venue {name!r}; have {sorted(VENUES)}")
+    return VENUES[key]
+
+
 def config_from_dict(data: dict | None = None) -> StrategyConfig:
     cfg = StrategyConfig()
     if data:
         payload = dict(data)
         venue_patch = payload.pop("venue", None)
-        if venue_patch:
-            cfg.venue = cfg.venue.with_overrides(**venue_patch)
+        if isinstance(venue_patch, str):
+            # "venue": "okx" -- pick a preset wholesale.
+            cfg.venue = _venue_preset(venue_patch)
+        elif venue_patch:
+            patch = dict(venue_patch)
+            preset = patch.pop("preset", None)
+            base = _venue_preset(preset) if preset else cfg.venue
+            cfg.venue = base.with_overrides(**patch) if patch else base
         _merge(cfg, payload)
     cfg.normalise()
     return cfg

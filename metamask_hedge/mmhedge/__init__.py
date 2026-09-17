@@ -46,14 +46,16 @@ from .hedge import (HedgeDecision, MarketState, carry_component, decide,
 from .risk import LadderRung, MarginLadder, RiskReport, assess, build_ladder
 from .sizing import (Allocation, AssetSlice, allocate, leverage_for_survival,
                      liquidation_move, margin_fraction_for_survival)
-from .venue import METAMASK, MarginTier, MetaMaskVenue
+from .venue import (METAMASK, OKX, VENUES, MarginTier, MetaMaskVenue,
+                    Venue, compare_venues)
 from .viability import (OperatingCosts, ViabilityReport, assess_viability,
                         dca_drag, dca_table, ramp_table)
 
 __version__ = "1.0.0"
 
 __all__ = [
-    "METAMASK", "MetaMaskVenue", "MarginTier",
+    "METAMASK", "OKX", "VENUES", "Venue", "MetaMaskVenue", "MarginTier",
+    "compare_venues",
     "StrategyConfig", "config_from_dict", "load_config", "to_dict",
     "CoreParams", "HedgeParams", "CarryParams", "RiskParams", "CashParams",
     "Check",

@@ -203,9 +203,12 @@ def allocate(cfg: StrategyConfig, capital_usd: float | None = None,
     # a SOL hedge needs 2.5% maintenance where a BTC hedge needs 1%.
     per_asset_margin = {}
     for symbol, weight in cfg.core.weights.items():
-        tier = venue.tier_for(cfg.hedge_symbol(symbol))
-        per_asset_margin[symbol] = margin_fraction_for_survival(
-            survive, tier.maintenance_margin)
+        hedge_sym = cfg.hedge_symbol(symbol)
+        # The venue decides this, not the strategy: under cross margin the spot
+        # leg is already collateral and the requirement collapses toward zero;
+        # under isolated margin you fund the whole survivable move yourself.
+        per_asset_margin[symbol] = venue.hedge_collateral_fraction(
+            hedge_sym, survive, lev)
     blended = sum(cfg.core.weights[s] * m for s, m in per_asset_margin.items())
 
     deployable = capital * (1.0 - cash_floor_pct)
@@ -221,6 +224,9 @@ def allocate(cfg: StrategyConfig, capital_usd: float | None = None,
         notional_i = core_i * h_max
         margin_frac_i = per_asset_margin[symbol]
         collateral_i = notional_i * margin_frac_i
+        # Never post more than the requirement: on a cross-margin venue the
+        # requirement can be zero, and posting 1/leverage anyway would idle
+        # capital the venue never asked for.
         posted_i = notional_i * min(posted_frac, margin_frac_i)
         reserve_i = max(0.0, collateral_i - posted_i)
         slices.append(AssetSlice(
