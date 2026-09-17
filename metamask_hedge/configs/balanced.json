@@ -1,0 +1,18 @@
+{
+  "name": "metamask-hedged-core-balanced",
+  "capital_usd": 25000.0,
+  "core": {
+    "weights": {"BTC": 0.55, "ETH": 0.30, "SOL": 0.15},
+    "staked_pct": {"ETH": 0.50},
+    "rebalance_with": "perp"
+  },
+  "hedge": {
+    "max_hedge_ratio": 1.00,
+    "leverage": 2.0,
+    "ladder_steps": 3,
+    "min_step": 0.10,
+    "use_maker_orders": true
+  },
+  "carry": {"enter_apr": 0.15, "full_apr": 0.45, "exit_apr": 0.05},
+  "risk": {"survive_rally_pct": 0.50, "max_core_drawdown_pct": 0.35}
+}

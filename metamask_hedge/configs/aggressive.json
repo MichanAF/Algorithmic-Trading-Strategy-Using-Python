@@ -1,0 +1,31 @@
+{
+  "name": "metamask-hedged-core-aggressive",
+  "capital_usd": 25000.0,
+  "_warning": "3x on the short liquidates at +32% and the reserve is zero: this preset trades survivability for capital efficiency. Run `mmhedge sweep` on it before believing the carry numbers.",
+  "core": {
+    "weights": {"BTC": 0.45, "ETH": 0.30, "SOL": 0.25},
+    "staked_pct": {},
+    "rebalance_with": "perp"
+  },
+  "hedge": {
+    "max_hedge_ratio": 1.00,
+    "leverage": 3.0,
+    "ladder_steps": 2,
+    "min_step": 0.10,
+    "use_maker_orders": true
+  },
+  "carry": {
+    "enter_apr": 0.12,
+    "full_apr": 0.35,
+    "exit_apr": 0.04,
+    "hold_safety_multiple": 2.0,
+    "min_hold_days": 1.0
+  },
+  "risk": {
+    "survive_rally_pct": 0.30,
+    "margin_call_at": 0.50,
+    "margin_urgent_at": 0.75,
+    "max_core_drawdown_pct": 0.40,
+    "deleverage_cooldown_hours": 48
+  }
+}
