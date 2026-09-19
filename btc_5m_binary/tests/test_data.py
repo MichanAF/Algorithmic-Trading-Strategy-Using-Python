@@ -406,6 +406,39 @@ def test_a_year_needs_about_a_dozen_monthly_archives():
     assert months == sorted(months)
 
 
+def test_a_past_end_date_cuts_a_window_that_ends_there():
+    """A development set and a holdout have to come from history nobody has
+    examined, so the archive list must stop at the requested date and never
+    reach into the months after it."""
+    end = datetime(2024, 9, 13, tzinfo=timezone.utc)
+    months, days = data._dump_periods(105_120, end)
+    assert months[-1] == "2024-08"                    # nothing at or after Sep
+    assert all(m < "2024-09" for m in months)
+    assert days == [f"2024-09-{d:02d}" for d in range(1, 13)]
+    assert "2024-09-13" not in days                    # the end day is excluded
+
+
+def test_two_end_dates_a_year_apart_are_contiguous_and_disjoint(monkeypatch):
+    """The whole protocol rests on dev, holdout and the seen year not sharing a
+    bar.  Serve one archive spanning the boundary and cut it both ways."""
+    boundary = int(datetime(2024, 9, 13, tzinfo=timezone.utc).timestamp())
+    opened = boundary - 300 * 5                        # five bars before...
+    rows = [(opened + i * 300, "100.5") for i in range(10)]   # ...to five after
+    served = _zip_klines(rows)
+
+    def fake(request, timeout=None):
+        return _Response_bytes(served)
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    earlier = data.fetch_binance_dump(
+        bars=5, now=datetime(2024, 9, 13, tzinfo=timezone.utc))
+    later = data.fetch_binance_dump(
+        bars=5, now=datetime(2025, 9, 13, tzinfo=timezone.utc))
+    assert earlier.ts[-1] == boundary                  # ends ON the boundary
+    assert later.ts[-1] == boundary + 300 * 5
+    assert set(earlier.ts).isdisjoint(set(later.ts))
+
+
 def test_the_dump_fetch_stitches_archives_into_one_series(monkeypatch):
     opened = 1_757_675_400
     served = {}
@@ -419,7 +452,8 @@ def test_the_dump_fetch_stitches_archives_into_one_series(monkeypatch):
     # Two monthly archives, contiguous.
     now = datetime(2026, 3, 1, tzinfo=timezone.utc)
     months, _ = data._dump_periods(400, now)
-    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", iv="5m", ym=m)
+            for m in months[-2:]]
     served[urls[0]] = _zip_klines([(opened + i * 300, "100.5")
                                    for i in range(200)])
     served[urls[1]] = _zip_klines([(opened + (200 + i) * 300, "101.5")
@@ -438,7 +472,8 @@ def test_a_missing_archive_is_skipped_and_shows_up_as_a_gap(monkeypatch):
     opened = 1_757_675_400
     now = datetime(2026, 3, 1, tzinfo=timezone.utc)
     months, _ = data._dump_periods(400, now)
-    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", ym=m) for m in months[-2:]]
+    urls = [data._DUMP_MONTH.format(sym="BTCUSDT", iv="5m", ym=m)
+            for m in months[-2:]]
     # Only the second archive exists, and it starts well after the first would.
     served = {urls[1]: _zip_klines(
         [(opened, "100.5"), (opened + 3_000, "101.5")])}
@@ -488,3 +523,160 @@ class _Response_bytes:
 
     def __exit__(self, *exc):
         return False
+
+
+# --------------------------------------------------------------------------- #
+# the taker-buy column: kept from the source, survives the CSV, optional
+# --------------------------------------------------------------------------- #
+
+def _bars(n=5, taker=True):
+    ts = 1_757_675_700 + np.arange(n) * BAR_SECONDS
+    ones = np.ones(n)
+    return BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones,
+                     volume=ones * 10.0,
+                     taker_buy=(np.arange(n, dtype=float) + 1.0) if taker else None)
+
+
+def test_binance_klines_keep_the_taker_buy_column():
+    """Field 9 of a kline is taker_buy_base_volume; it was being discarded."""
+    opened = 1_757_675_400
+    full = [opened * 1000, "1", "2", "0.5", "1.5", "10", opened * 1000 + 299_999,
+            "15.0", "42", "6.0", "9.0", "0"]
+    row = data._parse_candles("binance", [full], "BTCUSDT")[0]
+    assert row[6] == pytest.approx(6.0)
+
+
+def test_a_short_kline_yields_nan_taker_rather_than_crashing():
+    """Test fakes and some mirrors send seven fields; the column is optional."""
+    opened = 1_757_675_400
+    short = [opened * 1000, "1", "2", "0.5", "1.5", "10", opened * 1000 + 299_999]
+    row = data._parse_candles("binance", [short], "BTCUSDT")[0]
+    assert np.isnan(row[6])
+
+
+def test_other_exchanges_carry_a_nan_taker_column():
+    opened = 1_757_675_400
+    coinbase = data._parse_candles("coinbase", [[opened, 0.5, 2, 1, 1.5, 10]], "BTC-USD")
+    assert np.isnan(coinbase[0][6])
+
+
+def test_archives_keep_the_taker_buy_column():
+    rows = data._dump_rows(_zip_klines([(1_757_675_400, "100.5")]), "BTCUSDT")
+    assert rows[0][6] == pytest.approx(6.0)        # taker_base in the fixture
+
+
+def test_taker_buy_survives_a_csv_round_trip(tmp_path):
+    path = tmp_path / "bars.csv"
+    _bars().write_csv(path)
+    header = path.read_text().splitlines()[0]
+    assert "taker_buy" in header
+    back = data.load_csv(path)
+    assert back.taker_buy is not None
+    assert list(back.taker_buy) == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+
+def test_a_series_without_taker_buy_writes_and_loads_without_it(tmp_path):
+    path = tmp_path / "bars.csv"
+    _bars(taker=False).write_csv(path)
+    assert "taker_buy" not in path.read_text().splitlines()[0]
+    assert data.load_csv(path).taker_buy is None
+
+
+def test_taker_buy_is_carried_through_slicing():
+    s = _bars(n=6)[2:5]
+    assert list(s.taker_buy) == [3.0, 4.0, 5.0]
+    assert _bars(taker=False)[1:3].taker_buy is None
+
+
+def test_taker_buy_length_is_validated():
+    ts = 1_757_675_700 + np.arange(3) * BAR_SECONDS
+    ones = np.ones(3)
+    with pytest.raises(ValueError, match="taker_buy length"):
+        BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones,
+                  volume=ones, taker_buy=np.ones(2))
+
+
+# --------------------------------------------------------------------------- #
+# 1-minute bars: the same paths, a different interval
+# --------------------------------------------------------------------------- #
+
+def test_bar_length_is_a_fact_of_the_data():
+    five = _bars(n=6)
+    assert five.bar_seconds == 300
+    ts = 1_757_675_700 + np.arange(6) * 60
+    ones = np.ones(6)
+    one = BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones, volume=ones)
+    assert one.bar_seconds == 60
+    # Two 5-minute bars ten bars apart are still 5-minute bars.
+    sparse = BarSeries(ts=[1_757_675_700, 1_757_675_700 + 3000], open=[1, 1],
+                       high=[1, 1], low=[1, 1], close=[1, 1], volume=[1, 1])
+    assert sparse.bar_seconds == 300
+    assert sparse.gaps() == [(1, 9)]
+    assert five[:1].bar_seconds == 300                # one bar: the default
+
+
+def test_gaps_on_a_minute_series_are_counted_in_minutes():
+    ts = 1_757_675_700 + np.array([0, 60, 120, 360, 420]) * 1
+    ones = np.ones(5)
+    s = BarSeries(ts=ts, open=ones, high=ones, low=ones, close=ones, volume=ones)
+    assert s.bar_seconds == 60
+    assert s.gaps() == [(3, 3)]                       # 180, 240, 300 missing
+
+
+def test_minute_archives_come_from_the_1m_path():
+    url = data._DUMP_MONTH.format(sym="BTCUSDT", iv="1m", ym="2024-08")
+    assert url.endswith("/klines/BTCUSDT/1m/BTCUSDT-1m-2024-08.zip")
+    day = data._DUMP_DAY.format(sym="BTCUSDT", iv="1m", ymd="2024-09-01")
+    assert day.endswith("/klines/BTCUSDT/1m/BTCUSDT-1m-2024-09-01.zip")
+    opened = 1_757_675_400
+    rows = data._dump_rows(_zip_klines([(opened, "100.5")]), "BTCUSDT", 60)
+    assert rows[0][0] == opened + 60                  # a minute, not five
+    # A year of minutes is the same twelve-odd monthly archives.
+    now = datetime(2024, 9, 13, tzinfo=timezone.utc)
+    months, days = data._dump_periods(525_600, now, 60)
+    assert months == data._dump_periods(105_120, now, 300)[0]
+    assert days == data._dump_periods(105_120, now, 300)[1]
+
+
+def test_the_dump_fetch_honours_the_interval(monkeypatch):
+    opened = 1_757_675_400
+    now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    months, _ = data._dump_periods(400, now, 60)
+    wanted = data._DUMP_MONTH.format(sym="BTCUSDT", iv="1m", ym=months[-1])
+    asked = []
+
+    def fake(request, timeout=None):
+        asked.append(request.full_url)
+        if request.full_url != wanted:
+            raise data.urllib.error.HTTPError(request.full_url, 404, "nope", None, None)
+        return _Response_bytes(_zip_klines([(opened + i * 60, "100.5")
+                                            for i in range(400)]))
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    series = data.fetch_binance_dump(bars=400, now=now, interval="1m")
+    assert len(series) == 400
+    assert list(np.diff(series.ts)) == [60] * 399
+    assert series.bar_seconds == 60
+    assert series.gaps() == []
+    assert all("/1m/" in url for url in asked)
+    assert not any("/5m/" in url for url in asked)
+
+
+def test_the_rest_paths_honour_the_interval(monkeypatch):
+    kline = [1_757_675_400_000, "1", "2", "0.5", "1.5", "10", 1_757_675_459_999]
+    row = data._parse_candles("binance", [kline], "BTCUSDT", 60)[0]
+    assert row[0] == 1_757_675_400 + 60
+    fake = _FakeBinance(bars=50, last_close=1_757_675_700)
+    monkeypatch.setattr(data.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    data.fetch_history("binance", bars=10, pause_seconds=0, interval="1m")
+    assert "interval=1m" in fake.calls[0]
+
+
+def test_only_binance_serves_minute_candles():
+    with pytest.raises(ValueError, match="5m candles only"):
+        data.fetch_klines("coinbase", interval="1m")
+    with pytest.raises(ValueError, match="5m candles only"):
+        data.fetch_history("coinbase", bars=10, interval="1m")
+    with pytest.raises(ValueError, match="unsupported interval"):
+        data.fetch_binance_dump(bars=10, interval="15m")

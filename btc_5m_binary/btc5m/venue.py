@@ -47,7 +47,7 @@ class VenueRules:
     settlement_url: str = ""
     # How far into the window we will still open a position.  The whole edge
     # comes from acting on the bar close that started the window.
-    max_entry_seconds: int = 45
+    max_entry_seconds: int = 30
     min_seconds_to_expiry: int = 60
     # A quote this far from even, this early, means the market already knows
     # something the signal does not.
@@ -108,7 +108,7 @@ PREDICT_FUN_BTC_5M = VenueRules(
     chain="BNB Smart Chain",
     collateral="USDT",
     settlement_url="https://www.pyth.network/price-feeds/crypto-btc-usd",
-    max_entry_seconds=45,
+    max_entry_seconds=30,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
     fee_model="flat_bps",
@@ -129,7 +129,13 @@ POLYMARKET_BTC_5M = VenueRules(
     name="polymarket-btc-5m",
     window_seconds=300,
     settlement_candle_seconds=300,
-    price_feed="chainlink-btcusd (data.chain.link/streams/btc-usd)",
+    # Read off a live market on 2026-09-15: the resolution source is Chainlink's
+    # BTC/USD *60-second TWAP* stream, not the spot stream the April 2026 windows
+    # used.  Up if the TWAP at the end of the window is >= the price at its
+    # start.  A one-minute average at each end is not the close-to-close return
+    # the backtest settles on; the difference is measurable from minute bars
+    # and has not been measured yet.
+    price_feed="chainlink-btcusd-twap-60s (data.chain.link/streams/btc-usd-twap-60s-streams)",
     quote_style="contract_price",
     # Resolves Up when the end price is >= the start price, so an exact tie pays
     # the UP side and costs the DOWN side.  Not a 50-50 split.
@@ -137,8 +143,8 @@ POLYMARKET_BTC_5M = VenueRules(
     tie_resolves_to=UP,
     chain="Polygon",
     collateral="USDC",
-    settlement_url="https://data.chain.link/streams/btc-usd",
-    max_entry_seconds=45,
+    settlement_url="https://data.chain.link/streams/btc-usd-twap-60s-streams",
+    max_entry_seconds=30,
     min_seconds_to_expiry=60,
     max_entry_skew=0.12,
     fee_model="polymarket_taker",

@@ -1,5 +1,19 @@
 # BTC 5-minute binary strategy
 
+> ## Result: this strategy loses money on real data. Do not trade it.
+>
+> On a real year of Binance BTCUSDT 5-minute bars it hits **49.18%** where it
+> needs **52.00%**, an edge of **−2.82%**, and it trips its own drawdown limit on
+> both venues. Every positive number this README used to lead with came from a
+> synthetic generator that the gate stack had also been *selected on* — an
+> 8-to-9 point illusion. [The full comparison is below.](#one-year-backtest-the-strategy-does-not-work)
+>
+> What is worth reading here is the machinery and the venue research, not the
+> signal: a measurement rig that rejected its own hypothesis, an audit of where
+> gates overlap, a contract-market fee and settlement model, and a read-only
+> predict.fun client. The signal itself is a dead end, and the write-up of *why*
+> is more useful than the code that produced it.
+
 One question, asked every five minutes: **will BTC close higher or lower than it
 is right now? Yes or no.**
 
@@ -16,6 +30,13 @@ Everything is auditable. Every gate reports its own sub-checks, so a refused bar
 names the exact condition that stopped it.
 
 ---
+
+## Just want to place bets?
+
+[QUICKSTART.md](QUICKSTART.md) is the short path: one command that watches the
+live market and prints each bet in full when every condition passes, for you to
+place by hand. It holds no key and places nothing. Read the two unmeasured risks
+at the end of it first.
 
 ## Start with the arithmetic, not the indicators
 
@@ -94,28 +115,64 @@ Gates come in three kinds, and they run in this order:
 3. **Confirmation gates** are told the side the directional gates chose and may
    only veto it, never propose their own.
 
-The default stack is **three gates**, one per genuinely distinct question:
+The default stack is **three gates**, one per intended question:
 
-| Gate | Kind | The question | Why this one |
+| Gate | Kind | The question | Real data says |
 |---|---|---|---|
-| `data_integrity` | veto | Is the input real? | A gapped bar, stuck price or blown spread turns the bet into a coin flip at worse odds. Costs nothing to check. |
-| `trend_alignment` | directional | Which way? | The only gate whose removal drops the stack below break-even. Strongest on its own (53.5%, z = +4.3) and in combination (+3.5 points marginal, z = +4.1). |
-| `persistence` | directional | Does "which way" mean anything right now? | Five-minute BTC returns are mildly negatively autocorrelated, so following a trend only pays in the subset of time when moves extend. The variance ratio is that test. +2.2 points marginal, z = +3.1. |
+| `data_integrity` | precondition | Is the input real? | Vetoed **28 bars in a year** (0.027%). No measurable effect — as expected of cheap tail insurance on a clean source. Not a gate in any meaningful sense; judging it by hit rate is the wrong test. |
+| `trend_alignment` | directional | Which way? | **48.01%, z = −17.7. Anti-predictive.** Passing makes a bar marginally *worse* than failing (48.38% vs 48.76%, z = −0.7). |
+| `persistence` | directional | Does "which way" mean anything now? | **48.56%, z = −12.3. Anti-predictive.** Separation beyond the other gates +0.56%, z = +1.2 — no information. |
 
-Both directional gates earn their place: `btc5m overlap` confirms each still
-separates winners from losers once the other has agreed. Nothing in this stack
-is dead weight, which is the point of picking three rather than five.
+### Every gate in the menu is at or below break-even on real BTC
 
-Every gate reports its own sub-checks, so a refused bar names the exact
-condition that stopped it rather than reporting a bare verdict.
+`btc5m gates`, run on the real year rather than the fixture. Break-even 52.00%:
 
-**One honest caveat.** `trend_alignment` and `persistence` fire on largely
-independent bars (phi +0.06) but agree on *direction* 98% of the time. So read
-this stack as one direction opinion plus one regime filter plus one integrity
-check — not as two independent votes on which way. If you would rather that be
-explicit, swap `persistence` for the `regime` gate, which runs the same variance
-ratio and ADX test as a veto with no direction vote. It measured equal
-(55.8% vs 56.3% out of sample, within noise).
+| Gate | Signals | Accuracy | vs break-even | z | Verdict |
+|---|---|---|---|---|---|
+| `mean_reversion` | 1,328 | 53.46% | +1.46% | +1.1 | no edge detectable |
+| `location` | 1,392 | 50.58% | −1.42% | −1.1 | no edge detectable |
+| `persistence` | 31,798 | 48.56% | −3.44% | **−12.3** | negative, significant |
+| `momentum_thrust` | 16,960 | 46.39% | −5.61% | **−14.6** | negative, significant |
+| `participation` | 28,510 | 47.06% | −4.94% | **−16.7** | negative, significant |
+| `trend_alignment` | 48,964 | 48.01% | −3.99% | **−17.7** | negative, significant |
+
+**Not one gate clears break-even.** Four are significantly negative. The two that
+are not are the two that barely fire. `mean_reversion` is the only positive sign
+in the table, and at z = +1.1 it is not established — but its direction is the one
+consistent with a lag-1 autocorrelation of −0.03.
+
+**What the synthetic fixture claimed about the same gate:**
+
+| `trend_alignment` | Synthetic | Real |
+|---|---|---|
+| Accuracy | 53.27% | 48.01% |
+| vs break-even | +1.27% | −3.99% |
+| z | **+2.7** | **−17.7** |
+| Verdict | "edge, significant" | "negative edge, significant" |
+
+The fixture named this gate the stack's strongest asset. Real BTC makes it a
+reliable way to pick the wrong side. Every sentence this README previously
+carried about which gates earn their place was evidence from that fixture, and
+is retracted.
+
+**The hypothesis is falsified, not mistuned.** *EMA stack plus higher-timeframe
+agreement predicts the next five minutes* is wrong on real data, and no threshold
+inside `trend_alignment` fixes a vote pointed the wrong way — a more selective
+wrong signal is a wrong signal with fewer samples. Its 63.5% rejection rate comes
+from five sub-checks that all measure the same thing (EMA order, 15-minute slope,
+regression slope, VWAP side — four readings of "is price trending"; only R² asks
+anything different), so they compound into severe selectivity without compounding
+evidence.
+
+Every gate still reports its own sub-checks, so a refused bar names the exact
+condition that stopped it rather than reporting a bare verdict. That machinery is
+sound; it is the gates' content that failed.
+
+**The caveat that was already in this README, and should have been louder.**
+`trend_alignment` and `persistence` fire on largely independent bars (phi +0.08 on
+real data) but agree on *direction* 99% of the time. The stack was never three
+independent votes: it is one direction opinion, one regime filter, and a sanity
+check. On real data the first two are both anti-predictive and the third is inert.
 
 ## The gate menu: what you can factor for
 
@@ -171,6 +228,66 @@ extreme is the tail of a move, not the start of one.
 If you have trade-level data, this is the gate to upgrade: cumulative volume
 delta and taker buy/sell imbalance are strictly better than candle-derived
 proxies. The interface is `Gate._evaluate`; add the feature in `features.py`.
+
+### Order flow, the one input that is not price
+| Gate | Factors |
+|---|---|
+| `taker_flow` | Taker-buy share of each bar's volume (Binance publishes it in every kline; the archives carry it), z-scored against the last day; a volume floor so imbalance on thin bars does not count |
+
+Every other gate in this menu is a function of open, high, low, close and
+volume, and every one of them measured at or below break-even on real BTC. A
+stack of price-derived gates can only re-ask the same question with different
+wording. Order flow asks a different one: *who was aggressing?* Its support in
+the microstructure literature is at seconds to a minute; whether it survives,
+or inverts, at a five-minute horizon on BTC is an empirical question, and
+`mode` (`"follow"` or `"fade"`) is the parameter that encodes the answer. Its
+values ship as placeholders and are chosen through the pre-registration
+protocol, not by sweeping.
+
+Flow decays over minutes, so the whole five-minute bar can be the wrong place
+to read it. `taker_flow.source = "1m"` reads the last `window` *minutes*
+before the open instead, pooled (summed taker volume over summed volume) from
+a 1-minute series of the same symbol passed with `--minute`:
+
+```bash
+python -m btc5m fetch --interval 1m --year --end 2024-09-13 -o dev-1m.csv
+python -m btc5m flow --data dev.csv --minute dev-1m.csv --config configs/fade-5m.json
+python -m btc5m backtest --data dev.csv --minute dev-1m.csv --config my-flow.json
+```
+
+`flow` is the instrument for choosing `source`, `window`, `mode` and
+`min_abs_z`. It prints the raw correlation of the pre-open share with the
+window's direction for the last 1, 2, 3 and 5 minutes and for the bar itself
+-- the sign says follow or fade, a noise band says whether it says anything --
+then the follow and fade accuracy at each |z| floor. It runs on the
+development year only (`.github/workflows/flow-dev.yml`, the year ending
+2024-09-13): read it, write the values into a config, test that config once on
+history it has never seen. Without a minute series a 1m-sourced gate stays in
+warm-up and never votes, which the CLI says out loud rather than betting on
+nothing.
+
+What it measured on the development year ([run 34750893609](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34750893609),
+104,789 graded windows, noise band ±0.0062):
+
+| pre-open share over | corr with next window | at \|z\| ≥ 2.0: signals/day, fade accuracy, z |
+|---|---|---|
+| last 1 min | −0.0099 | 6.3, 51.33%, −0.6 |
+| last 2 min | −0.0150 | 10.6, 51.52%, −0.6 |
+| last 3 min | −0.0171 | 11.9, 51.17%, −1.1 |
+| full 5-minute bar | **−0.0308** | 12.4, **53.93%**, **+2.6** |
+
+The sign is negative in every cell: flow **reverts** over the next window on
+BTC at this horizon, the same direction `mean_reversion` points. And the
+relationship *strengthens* as more of the bar is pooled -- the last minute
+alone is the weakest read, the whole bar the strongest -- which is the
+opposite of the fresh-flow intuition that motivated the minute path. At five
+minutes the taker share is not a signal about the next few seconds of order
+flow; it is a measure of how taker-driven the bar's push was, and a
+taker-driven push is what reverts. The minute path stays as the instrument
+that settled this. Its result argues for `source = "5m"`, and the one cell
+that clears z = +2 (the bar's own share, fade, \|z\| ≥ 2.0) is a
+development-year candidate, not an edge: one of twenty cells, unconfirmed on
+any holdout.
 
 ### Location and structure
 | Gate | Factors |
@@ -341,15 +458,25 @@ design: `persistence` keeps a +DI/-DI agreement filter that `regime` drops.
 
 ### What is deliberately left out
 
-| Gate | Why not |
-|---|---|
-| `volatility_regime` | Its floor assumes a spread you cross. A yes/no contract crosses none — any non-zero move resolves it. Accuracy is flat across the whole volatility range. |
-| `participation` | Its verdict adds no information once the other two agree (z = +1.9). Costs 80% of signals for ~1.5 points. |
-| `momentum_thrust` | Anti-predictive over the very next bar (z = −8.2). A sharp three-bar push is more often followed by a give-back. |
-| `location` | Harmful as a voter on a trend stack; a trending market is supposed to be near its recent extreme. |
-| `session` | Roughly free, but spends a slot on a veto with no directional content. Add it as a fourth if you trade through funding times. |
-| `mean_reversion` | Contradicts `persistence` by construction, and unproven on its own. |
-| `cross_asset` | Needs a second series wired up. Worth testing if you have ETH data. |
+Every "why not" below was decided on the synthetic fixture. Real-data figures are
+added where they exist, and they mostly say the exclusions were right for the
+wrong reasons — these gates are not merely redundant, they are negative.
+
+| Gate | Why not | Real data |
+|---|---|---|
+| `volatility_regime` | Its floor assumes a spread you cross. A yes/no contract crosses none — any non-zero move resolves it. Accuracy is flat across the whole volatility range. | not separately scored |
+| `participation` | Its verdict adds no information once the other two agree (z = +1.9 on the fixture). Costs 80% of signals for ~1.5 points. | **47.06%, z = −16.7.** Not neutral — significantly negative. |
+| `momentum_thrust` | Anti-predictive over the very next bar (z = −8.2 on the fixture). A sharp three-bar push is more often followed by a give-back. | **46.39%, z = −14.6.** The fixture had this one directionally right. |
+| `location` | Harmful as a voter on a trend stack; a trending market is supposed to be near its recent extreme. | 50.58%, z = −1.1. Too few signals to judge either way. |
+| `session` | Roughly free, but spends a slot on a veto with no directional content. Add it as a fourth if you trade through funding times. | not separately scored |
+| `mean_reversion` | Contradicts `persistence` by construction, and unproven on its own. | **53.46%, z = +1.1 — the only positive sign in the table.** Still unproven, but it is the one exclusion the real data argues against. |
+| `cross_asset` | Needs a second series wired up. Worth testing if you have ETH data. | 0 signals; never fired. |
+
+The pattern is worth naming: the fixture ranked the gates roughly correctly
+relative to each other while being wrong about all of them in absolute terms. It
+could tell which gate was *better*; it could not tell that none of them were
+*good*. A backtest on data you generated can only ever check internal
+consistency.
 
 ### Frequency is set by conviction, not by gate count
 
@@ -462,32 +589,361 @@ The `verdict` column is deliberately conservative. Under 100 joint passes, or
 under 50 bars in either bucket, it reports "too few to judge" rather than a
 number. A gate that looks brilliant on 57 signals in a year has told you nothing.
 
-## One-year backtest
+## One-year backtest: the strategy does not work
 
-The three-gate stack with each venue's own risk settings, 105,120 bars
-(365 days) of the bundled fixture at seed 11:
+**This is the headline result, and it is negative.** On a real year of Binance
+BTCUSDT 5-minute bars the three-gate stack loses money on both venues, and it
+does not lose narrowly — it hits a rate indistinguishable from a coin flip
+against a break-even that is above one.
 
 | | predict.fun | Polymarket |
 |---|---|---|
-| Conviction floor | 0.85 | 0.70 |
-| Bets placed | 4,259 (11.7/day) | 8,935 (24.5/day) |
-| Hit rate | 58.11% | 56.97% |
+| Bets placed | 851 (2.33/day) | 2,470 (6.77/day) |
+| Hit rate | **49.18%** ± 1.71% | **48.79%** ± 1.01% |
 | Break-even to beat | 52.00% (200 bps) | 51.75% (taker fee) |
-| Edge over break-even | +6.11% | +5.22% |
-| Max drawdown | 4.41% | 2.72% |
-| Annualised Sharpe | 8.09 | 9.96 |
-| Halted | no | no |
+| **Edge over break-even** | **−2.82%** | **−2.96%** |
+| Net P&L | −10.66% | −14.02% |
+| Max drawdown | 15.08% | 15.01% |
+| Annualised Sharpe | −1.65 | −2.95 |
+| Halted | **yes**, drawdown limit | **yes**, drawdown limit |
+
+105,120 bars, 2025-09-13 to 2026-09-13, from `data.binance.vision`. Reproduce it
+with the `Real-data backtest` workflow, or locally:
 
 ```bash
-python -m btc5m backtest --config configs/predict-fun-bnb-5m.json \
-  --synthetic 105120 --seed 11
+python -m btc5m fetch --year -o btc_5m.csv
+python -m btc5m backtest --data btc_5m.csv \
+  --config configs/predict-fun-bnb-5m.json
 ```
 
-**The returns those runs produce are not forecasts and are not quoted here.**
-The data is synthetic, the stack was selected on it, and Sharpe near 10 on a
-five-minute coin flip should read as a warning about the fixture, not a
-promise. The transferable numbers are the hit rate against break-even and the
-drawdown, and even those need re-measuring on real history.
+### What the synthetic fixture claimed, and the size of the error
+
+Every performance number this README carried before that run came off the seeded
+generator. Side by side:
+
+| | synthetic | real | gap |
+|---|---|---|---|
+| Hit rate, predict.fun | 58.11% | 49.18% | **−8.9 pts** |
+| Hit rate, Polymarket | 56.97% | 48.79% | **−8.2 pts** |
+| Edge, predict.fun | +6.11% | −2.82% | −8.9 pts |
+| Edge, Polymarket | +5.22% | −2.96% | −8.2 pts |
+
+Two compounding causes, both mine:
+
+1. **The fixture was tuned to look like BTC**, then the gate stack was *selected
+   on that same fixture*. Selection shrinkage was reported as in-sample +7.17%
+   to out-of-sample +5.42% — but both of those were inside the generator. The
+   real out-of-sample number is negative.
+2. **A trend-following direction vote contradicts the autocorrelation measured
+   at the outset** (lag-1 ≈ −0.03 on real 5-minute returns). The synthetic
+   series reproduced that number in aggregate while still rewarding trend
+   continuation, which real BTC does not.
+
+### Conviction is anti-predictive on real data
+
+The five-gate stack was replaced partly because its most confident bucket was
+its only losing one. On real data the three-gate stack does the same thing:
+
+| Conviction | Claimed | Realised (predict.fun) |
+|---|---|---|
+| 0.85 – 0.89 | 62.15% | 49.06% |
+| 0.89 – 0.93 | 62.66% | 50.96% |
+| 0.93 – 0.96 | 63.21% | 53.16% |
+| **0.96 – 1.00** | **63.90%** | **44.75%** |
+
+`prob_cap` is fiction here, so the Kelly sizing built on top of it is sizing off
+a number that means nothing.
+
+### What not to do next
+
+The tempting move is to search gate combinations until one clears break-even on
+this year. **That is the same error one layer deeper** — it would be selecting on
+the only real data available, and the resulting figure would be exactly as
+unreliable as the +6.11% was. Any further hypothesis needs a holdout period
+fixed *before* it is tested, and a reason to believe it beyond backtest fit.
+
+What survives the result: the venue findings (the per-market Pyth feed, the 200
+bps, the window derivation), the data pipeline, the risk layer that halted both
+runs as designed, and a measurement rig that rejected the idea before it cost
+anything.
+
+### The fade hypothesis: protocol fixed before the data was seen
+
+One hypothesis follows from the evidence, and it is tested here the only way a
+backtest can be trusted — on history nobody has examined, with the pass
+criterion written down first.
+
+**The hypothesis.** Fade, do not follow. Every trend-following gate measured
+significantly below break-even on real BTC; `mean_reversion` was the only gate
+with a positive sign (+1.46%, z = +1.1, *not* established); and the lag-1
+autocorrelation of real 5-minute returns is ≈ −0.03, which points the same way.
+`configs/fade-5m.json` is that hypothesis and nothing else: `mean_reversion` as
+the sole direction vote, `data_integrity` as the precondition, and the predict.fun
+betting and risk settings unchanged so the comparison with the failed stack is
+fair. Its parameters are pinned in the file so a change to library defaults
+cannot alter the test.
+
+The stack carries a third gate, `session`, because the validator requires three.
+It was chosen before any data was seen for two structural reasons: it is a veto
+with no direction vote, and it reads only the clock, so it shares no feature with
+`mean_reversion`. Pinned to its defaults — every hour and every weekday open,
+only a ±5-minute blackout around the 00/08/16 UTC funding marks, about 2% of
+bars. If it turns out to matter, that is a finding to report, not a knob.
+
+**The data.** Three contiguous years from Binance's archives, cut with
+`fetch --end`, which ends a series at midnight UTC on a date so consecutive
+windows never share a bar:
+
+| Window | Year ending | Role | Examined before this? |
+|---|---|---|---|
+| development | 2024-09-13 | where the idea is allowed to look good | no |
+| **holdout** | **2025-09-13** | **where it has to** | **no — touched once** |
+| contaminated | 2026-09-13 | third confirmation, lower trust | yes — its gate scores were read while choosing the hypothesis |
+
+**The pass criterion, pre-registered on 2026-09-13**, on the holdout only:
+`mean_reversion` edge vs the 52.00% break-even above **+1.0%**, with **z ≥ +2**
+in the gate table, *and* the backtest does not halt. Anything less and the
+hypothesis fails — and the work stops, rather than moving on to the next idea
+against the same year.
+
+**The rule.** `configs/fade-5m.json` is not edited after a holdout result has
+been read. Doing so burns the holdout: the next test needs a fresh one cut from
+earlier history. The `Fade hypothesis` workflow takes no inputs for the same
+reason — a parameter sweep here would be the original error again.
+
+#### Result: the holdout passed the pre-registered criterion
+
+[Run 34749136959](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34749136959),
+2026-09-13. All three windows fetched full and contiguous — 105,120 bars each,
+each starting on the bar after the previous one ended.
+
+`mean_reversion` as a direction vote, against the 52.00% break-even:
+
+| Window | Signals | Accuracy | vs break-even | z |
+|---|---|---|---|---|
+| development | 1,385 | 54.73% | +2.73% | +2.0 |
+| **holdout** | **1,220** | **55.55%** | **+3.55%** | **+2.5** |
+| contaminated | 1,328 | 53.46% | +1.46% | +1.1 |
+
+The fade config, backtested with the predict.fun risk and betting settings:
+
+| | development | **holdout** | contaminated |
+|---|---|---|---|
+| Bets placed | 325 (0.89/day) | **235 (0.64/day)** | 307 (0.84/day) |
+| Hit rate | 52.31% ± 2.77% | **56.60% ± 3.23%** | 55.70% ± 2.84% |
+| Edge vs break-even | +0.31% | **+4.60%** | +3.70% |
+| Net P&L, before gas | +0.46% | **+4.94%** | +5.34% |
+| Max drawdown | 3.86% | **2.17%** | 2.54% |
+| Halted | no | **no** | no |
+
+**Criterion:** holdout gate edge above +1.0% → **+3.55%**. z ≥ +2 → **+2.5**. No
+halt → **none**. **Pass**, on data nobody had examined, against a bar fixed
+before it was fetched. Three independent years, all positive in sign, at both
+the signal level and the bet level. This is the first number in this repository
+that means something.
+
+**What it does not mean — read all four before treating it as a strategy.**
+
+1. **The bet-level evidence is thin.** The gate table is significant because it
+   scores every signal (1,220 on the holdout); the backtest then places only
+   235 bets after the 0.85 conviction floor and the risk layer. At the bet level
+   the holdout edge is +4.60% ± 3.23% — z ≈ 1.4, and the backtest says so. Pooled
+   across all three years, 867 bets at 54.67%: edge +2.67%, z ≈ 1.6. Pooled at
+   the signal level, 3,933 signals at 54.56%: z ≈ 3.2. The *signal* is
+   established; the *bet stream built on it* is not yet.
+2. **The development year barely cleared zero.** +0.31% edge, Sharpe 0.11. The
+   holdout was the strong year, which is the reverse of the usual pattern and
+   deserves suspicion rather than celebration: on a thin signal, one year's
+   result is mostly that year.
+3. **Conviction still predicts nothing.** Holdout calibration by bucket: 68.75%,
+   66.67%, **40.74%**, 53.08%. Not monotone. `prob_cap` remains fiction, so the
+   Kelly sizing on top of it is sizing off nothing; every bet should be treated
+   as the same flat stake until a conviction score is shown to mean something.
+4. **The P&L is before gas.** `backtest.py` does not subtract it; only the live
+   `evaluate_market` path does. 235 bets × $0.30 BNB gas ≈ $70 against $247 of
+   holdout profit — **28% of the edge**, on a $5,000 bankroll. The whole year
+   is worth about $175 net at this stake. The fee basis (200 bps of face vs of
+   premium) is also still unconfirmed, and it is worth another full point.
+
+**And the untested assumption that could still kill it.** A fade signal fires
+*after* a sharp stretch — exactly when a continuously-traded market may already
+have moved off 50/50. Whether predict.fun's quote is still near even when this
+gate fires has never been observed. That is step 2, and it comes before any
+money.
+
+**The holdout ending 2025-09-13 is now burned** for any change to
+`configs/fade-5m.json`. The next edit — a threshold, a second gate, anything —
+needs a fresh holdout cut from history before 2023-09-13.
+
+### The second hypothesis: fade a taker-driven push, pre-registered
+
+`configs/fade-flow-5m.json` adds the order-flow gate beside the fade gate.
+Every value in it was chosen by the person building the strategy, one at a
+time, on the development year, with the evidence and the run each came from
+recorded in `DECISIONS.md`: the taker gate reads the bar's own share and
+fades it (the last 1 to 3 minutes before the open were measured and were
+weaker), at a |z| floor of 2.0 with no volume floor; either gate may carry a
+bar and a disagreement is refused; the taker vote is flat, because a vote
+that climbed with |z| let the 0.85 conviction floor keep only the extreme
+tail, which turned 16 signals a day into 320 bets a year at break-even. On
+the development year the config placed 4,632 bets at 53.53%, +1.53% over
+break-even, significant at two standard errors -- the hypothesis, not the
+evidence, since every value was chosen there.
+
+The fresh holdout is the year ending 2023-09-13, which nothing in this
+repository had read when the config was written. The pass criterion, fixed
+before the fetch: on that year the backtest beats 52.00% by at least +1.0%,
+significant at two standard errors, with no halt.
+`.github/workflows/fade-flow-hypothesis.yml` ran it once
+([run 34755099078](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34755099078)).
+
+**It failed, by the letter.** On the fresh year the config placed 4,663 bets
+at 54.31% ± 0.73%, +2.31% over break-even, significant at two standard
+errors -- and the backtest halted: the drawdown reached 15.07% against the
+15.00% limit, late in the year, with the year's P&L at +62.58% before it.
+Two clauses passed by a wide margin; the third failed by 0.07 of a point.
+
+| year | bets | hit rate | vs 52.00% | drawdown | halted |
+|---|---|---|---|---|---|
+| **fresh holdout** (to 2023-09-13) | 4,663 | **54.31%** | **+2.31%** | 15.07% | **yes, late** |
+| development (to 2024-09-13) | 4,632 | 53.53% | +1.53% | 9.24% | no |
+| later, seen (to 2025-09-13) | 3,590 | 51.14% | −0.86% | 15.16% | yes |
+| later, seen (to 2026-09-13) | 4,087 | 53.94% | +1.94% | 7.72% | no |
+
+Read it as three findings, not one. The signal cleared the bar on a year it
+had never seen. The risk block was pinned from a config that bet 235 times a
+year and was never sized for 4,600, and its 15% drawdown limit tripped in
+two of four years. And one year was negative: the year the fade gate alone
+did best is the year the taker gate did nothing. Pooled over the three years
+the values were not chosen on, 53.26% on 12,301 bets, +1.26%, z ≈ 2.8, with
+a year-to-year range from −0.86% to +2.31%, before gas. The config is not
+edited; anything different is a new hypothesis with a new fresh year (the
+one ending 2022-09-13), and the full account is in `DECISIONS.md`.
+
+### The third hypothesis: the same signal, sized for its bet count
+
+`configs/fade-flow-sized-5m.json` is the second config with one value moved:
+the stake per bet, 0.25% of bankroll to 0.10%, chosen (Decision 8 in
+`DECISIONS.md`) from four sizings run on the four years already seen. With a
+stake of s and N bets an ordinary year's drawdown is about s × √N, so at
+0.25% and 4,600 bets the 15% limit sat on top of a normal year; at 0.10% it
+sits at about 2.3 times one. On the seen years that sizing halted in none,
+with drawdowns of at most 6.4% and yearly results from −4.7% to +20.5% --
+none of it evidence, all of it burned. The fresh holdout is the year ending
+2022-09-13, the pass bar is unchanged, and
+`.github/workflows/fade-flow-sized-hypothesis.yml` ran it once
+([run 34756636545](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34756636545)).
+
+**It failed, by the letter, on the significance clause.** 5,020 bets at
+53.23% ± 0.70%, +1.23% over break-even, no halt, drawdown 5.46% -- and 1.8
+standard errors above break-even where the bar asked for 2. On 5,000 bets
+that clause needs about +1.4%.
+
+| year | status | bets | hit rate | vs 52.00% | on its own |
+|---|---|---|---|---|---|
+| **to 2022-09-13** | **fresh, this run** | 5,020 | **53.23%** | **+1.23%** | z 1.8 |
+| to 2023-09-13 | fresh for the second run | 4,964 | 54.21% | +2.21% | significant |
+| to 2024-09-13 | development | 4,632 | 53.53% | +1.53% | significant |
+| to 2025-09-13 | seen | 4,085 | 51.30% | −0.70% | negative |
+| to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% | significant |
+
+Pooled over the four years the values were not chosen on: 53.22% on 18,109
+bets, +1.22%, z ≈ 3.3, range −0.70% to +2.21%, before gas. The edge looks
+real and small, and a per-year bar of two standard errors is one a true
++1.2% edge clears less than half the time -- a fact about the bar's power
+that was noticed after the result and therefore cannot rescue this run.
+Three pre-registered tests so far: one pass, two fails on a single clause
+each. The config is not edited; the account is in `DECISIONS.md`.
+
+### The fourth hypothesis: the same signal, a bar sized to its effect
+
+`configs/fade-flow-pooled-5m.json` changes no value. It changes the bar:
+pooled over three fresh years under one config -- the year ending 2021-09-13,
+never fetched, and the years ending 2022-09-13 and 2023-09-13, each the fresh
+holdout of an earlier run -- the hit rate must beat 52.00% by at least +1.0%
+and by two standard errors of the pooled estimate, and the new year must not
+halt. Written before the fetch, and with its own weakness written beside it:
+given the two years already known, the new year must come in at about 52.4%
+or better; a worthless signal would still pass about one time in four, a
++1.2% edge about seven times in eight.
+`.github/workflows/fade-flow-pooled-hypothesis.yml` ran it once
+([run 34757815880](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/34757815880)).
+
+**It passed, by the letter, and by the thinnest margin the bar allowed.** The
+fresh year: 4,797 bets at 52.48% ± 0.72%, +0.48%, no halt -- right at the
+52.4% the bar asked. Pooled over the three fresh years: 53.31% on 14,758
+bets, +1.31%, z +3.2.
+
+| year | status | bets | hit rate | vs 52.00% |
+|---|---|---|---|---|
+| **to 2021-09-13** | **fresh, this run** | 4,797 | **52.48%** | **+0.48%** |
+| to 2022-09-13 | fresh, third run | 5,020 | 53.23% | +1.23% |
+| to 2023-09-13 | fresh, second run | 4,964 | 54.21% | +2.21% |
+| to 2024-09-13 | development | 4,632 | 53.53% | +1.53% |
+| to 2025-09-13 | seen | 4,085 | 51.30% | −0.70% |
+| to 2026-09-13 | seen | 4,087 | 53.94% | +1.94% |
+
+Read it with the earlier runs, not instead of them. Pooled over the five years
+the values were not chosen on: 53.07% on 22,905 bets, +1.07%, z +3.2,
+95% range about +0.4% to +1.7%, before gas. The best
+estimate of the edge is about +1.1% of hit rate, +2% of stake per bet. Four
+pre-registered tests on unseen years: two passes, two fails on a single
+clause each, every one above break-even. The program of fresh-year tests on
+this signal ends here. What is left is not a backtest question: bankroll,
+venue and gas decide whether +2% of stake is money, and only a live quote
+says whether the market is near 50/50 when these gates fire.
+
+### The six days since, forward: 57 bets at 57.89%, and what that can say
+
+Every table above runs on a year cut with `fetch --end`, and the newest of them
+ends at 2026-09-13 00:00 UTC. The days after that instant had been read by
+nothing here, so `.github/workflows/forward-slice.yml` runs the pooled config
+on them, forward, at no cost to the three pre-registered years still unread
+([run 35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972)).
+
+`tools/slice_forward.py` cuts the slice, and the cut is the part that has to be
+right. A slice starting at the cutoff spends its first day inside the gates'
+warm-up scoring nothing; a slice starting a day early places bets inside the
+year already seen. So it asks the engine how many bars the warm-up consumes --
+287, a day of taker-flow z-scores -- and keeps exactly that many from before
+the cutoff, so the first bar the backtest grades is the first bar nobody had
+read. It prints that timestamp rather than leaving it to be assumed, and
+refuses a tail with too little history instead of quietly starting the warm-up
+after the cutoff.
+
+| | forward slice, 2026-09-13 to 2026-09-19 |
+|---|---|
+| windows evaluated | 1,727 (6.00 days, no gaps in either interval) |
+| tradable signals / bets | 58 / 57 (9.51 a day) |
+| hit rate | **57.89%** ± 6.54% (33W / 24L / 0 void) |
+| vs the config's 52.00% | **+5.89%**, z +0.90 -- not significant |
+| vs Polymarket's 51.75% | +6.14%, z +0.94 |
+| P&L | +25.38, +0.51% on 5,000; max drawdown 0.78%; no halt |
+
+**Read the standard error, not the headline.** Fifty-seven bets put one
+standard error at 6.5 points, so the 95% interval runs from about 45% to 71%:
+this number is consistent with the +1.1% edge, with twice it, and with no edge
+at all. At the five-year pooled 53.07%, 33 or more wins in 57 happens about one
+time in four. What a slice this size *can* do is catch a break -- a config that
+has stopped firing, a signal that has inverted hard -- and it caught neither:
+the fire rate held (9.51 bets a day against 11 to 14 in the pooled years) and
+the side was right more often than not. No value was chosen from it, and
+`DECISIONS.md` records that.
+
+The gate votes on the same six days are the older result again at a sample too
+small to lean on: `mean_reversion` 65.00% on 20 signals, `taker_flow` 54.55% on
+55, and every gate the audit discarded still at or below break-even --
+`trend_alignment` 49.00%, `persistence` 47.99%, `momentum_thrust` 45.85%,
+`participation` 46.30%.
+
+**The settlement reading repeated its verdict, which matters more than the win
+rate does.** On these 58 signals: `close_to_close` 58.62%, `twap_window`
+55.17%, `twap60_vs_open` 53.45%, and `twap60_ends` **50.00%** -- 8.62 points
+below the baseline and below break-even, the same ordering and the same victim
+as the year-long measurement. Two spans that share no data now say the same
+thing: if Polymarket settles a window by comparing the 60-second TWAP at each
+end, this strategy has no edge. That question is still open, and it is still
+worth more than the edge.
 
 ### Conviction now predicts accuracy, which it did not before
 
@@ -524,8 +980,8 @@ an edge survives.
 | Collateral | USDT | USDC | USDH |
 | Settles from | **per market** — a live one declares Pyth BTC/USD | Chainlink BTC/USD | HyperCore mark price |
 | Exact tie | pays 0.50 to both sides | resolves **Up** (`>=`) | n/a |
-| Taker fee | `feeRateBps` — **200** on a live market | `shares × 0.07 × p × (1−p)` | zero (initial testing) |
-| Maker fee | not separately documented | **zero** | zero |
+| Taker fee | `feeRateBps` — **200** on a live market | `shares × 0.07 × p × (1−p)` — **confirmed** on a live market's `feeSchedule` and in the docs | zero (initial testing) |
+| Maker fee | not separately documented | **zero**, documented: makers are never charged | zero |
 | Min order | not documented | 5 USDC | n/a |
 | Per-bet gas | yes, BNB Chain | none (off-chain CLOB) | none |
 | API | `api.predict.fun`, `x-api-key`, Python and TS SDKs | Gamma + CLOB + WebSocket | Python SDK |
@@ -555,7 +1011,7 @@ bet:
 
 The **maker fee is zero**. Posting a limit order instead of taking removes the
 cost entirely, and that is the single biggest execution lever on this venue —
-paid for in fill risk, which a 45-second entry window makes real.
+paid for in fill risk, which a 30-second entry window makes real.
 
 ### On cost, Polymarket wins at every stake
 
@@ -614,7 +1070,7 @@ vetoes enforce that:
 
 | Veto | Default | Why |
 |---|---|---|
-| `entry_window` | within 45s of the open | After that, part of the move you are betting on is already history |
+| `entry_window` | within 30s of the open | After that, part of the move you are betting on is already history |
 | `time_to_expiry` | at least 60s left | Below that you are betting on the tail of the window |
 | `market_not_decided` | quote skew ≤ 0.12 | A lopsided quote means the market knows something the signal does not |
 
@@ -666,7 +1122,7 @@ this bet the feed *is* the settlement rule.
 ### Latency, which this strategy is unusually sensitive to
 
 predict.fun's primary servers are in **ap-northeast-1 (Tokyo)**. The entry
-window is 45 seconds wide, so where you run from is not a detail: from Japan or
+window is 30 seconds wide, so where you run from is not a detail: from Japan or
 nearby the round trip is tens of milliseconds, from Europe or the US east coast
 it is a couple of hundred plus BNB Chain block time. Measure yours before
 trusting the `entry_window` default.
@@ -729,7 +1185,7 @@ the order's `maker`**.
 
 ethers defaults `provider.pollingInterval` to **4000ms**, so every internal
 `tx.wait()` can take up to four seconds to notice a transaction that already
-mined. Against a 45-second entry window on a chain with ~3-second blocks, that
+mined. Against a 30-second entry window on a chain with ~3-second blocks, that
 is most of the budget spent waiting for a poll.
 
 ```js
@@ -793,7 +1249,7 @@ start   = (created_at // seconds) * seconds   # exact window open
 
 **Why not parse the title?** `"Bitcoin Up or Down - September 12, 8:15AM-8:20AM
 ET"` states the window in Eastern Time, which means a DST rule and a locale in
-the hot path of a 45-second entry window. The slug and `createdAt` are both UTC
+the hot path of a 30-second entry window. The slug and `createdAt` are both UTC
 and both exact. `_window()` still prefers explicit `startsAt`/`endsAt` if a
 market kind ever publishes them.
 
@@ -812,6 +1268,315 @@ title. The two look nearly identical in a listing, and a 5-minute signal on a
 so the edge the gates measured over one bar is diluted across three. An unfiltered
 `markets()` call will hand you both.
 
+### Polymarket's read side, confirmed on a live window
+
+`polymarket.py` is the same idea for the other venue: two public hosts, both
+answering unauthenticated GETs, neither able to move money. The sandbox this
+was written from cannot reach either, so the check runs on a GitHub Actions
+runner: `.github/workflows/polymarket-probe.yml` runs
+`btc5m probe --venue polymarket-btc-5m` and keeps the raw payloads in the job
+log. Every field below comes from that log, not from memory. Two of the first
+guesses were wrong, and either would have cost money live: the window's start
+was read from a field that is not the start, and the minimum order size was
+read as a price.
+
+| | |
+|---|---|
+| Gamma, `gamma-api.polymarket.com` | what exists: `/markets?slug=` and `/events?slug=` both return a window |
+| CLOB, `clob.polymarket.com` | what it costs: `/book?token_id=`, `/midpoint?token_id=`, and the market's own record at `/markets/<conditionId>` |
+| The window's slug | `btc-updown-5m-<opening second>`: `btc-updown-5m-1789481100` is "Bitcoin Up or Down - September 15, 10:05AM-10:10AM ET" |
+| Window start | `eventStartTime` on the market, `startTime` on its event, and the slug's timestamp, which all agree. `startDate` is when the market went live, about a day earlier |
+| Window end | `endDate`, e.g. `2026-09-15T14:10:00Z`; the slug's `5m` fills it in if it is missing |
+| List fields | `outcomes`, `outcomePrices`, `clobTokenIds` are JSON-encoded **strings** |
+| Sides | `["Up", "Down"]`, matched by name to the two token ids, which are 77-digit integers |
+| Settled | `closed: true` with `outcomePrices` of `"1"` and `"0"` |
+| Order rules | `orderMinSize` **5 shares**, `orderPriceMinTickSize` 0.01 |
+| Fees | `feeSchedule` `{rate: 0.07, exponent: 1, takerOnly: true, rebateRate: 0.2}`; the `makerBaseFee` / `takerBaseFee` of 1000 are base fields it overrides |
+| Gamma prices | `outcomePrices`, `bestBid`, `bestAsk`, `lastTradePrice` were minutes stale on an open window; **price from the CLOB book only** |
+| Delay, book | `secondsDelay` 0, `clearBookOnStart` false; orders accepted from the listing time, a day ahead |
+| Resolution | Chainlink BTC/USD **60-second TWAP** stream, Up on `>=` |
+| Listing | windows are listed a day ahead, so a newest-first listing shows tomorrow's; today's is addressed by slug |
+
+**The resolution feed changed.** The April 2026 windows resolved on the spot
+stream, `btc-usd`; the September ones resolve on `btc-usd-twap-60s-streams`, a
+one-minute time-weighted average at each end of the window. That is not the
+close-to-close return the backtest settles on: a bar that reverses hard in its
+last thirty seconds settles differently under a TWAP than under its close, and a
+fade of a large bar is exactly the bet that cares. The difference is measurable
+from the minute bars already fetched and has not been measured. It is the next
+question on this venue after the quote.
+
+**The fee, confirmed twice.** The market's own `feeSchedule` reads
+`{rate: 0.07, exponent: 1, takerOnly: true, rebateRate: 0.2}` under
+`feeType: crypto_fees_v2`, and the documentation gives the formula
+`fee = C × feeRate × p × (1 − p)` with the crypto taker rate 0.07, the maker rate
+0 and a 20% maker rebate. That is exactly what `POLYMARKET_BTC_5M.fee_per_share`
+and `configs/polymarket-5m.json` (`fee_bps` 175) have charged all along: 1.75
+cents a share at 0.50, 3.5% of notional, break-even 51.75%. **Makers are never
+charged.** The `makerBaseFee` and `takerBaseFee` fields of 1000 on the same
+market, and the 1000 the CLOB's `fee-rate` endpoint returns, are base-rate
+fields the schedule overrides, not the effective fee. `PolyMarket.fee_per_share`
+prices from the schedule the market carries, so a rate change shows up in the
+quote rather than in a constant. The documentation also describes a tiered
+taker rebate; nothing here counts on it.
+
+**Gamma's prices are stale; the book is not.** Three minutes into an open
+window, Gamma still showed `bestBid` 0.50, `bestAsk` 0.51 and `outcomePrices`
+0.505/0.495, with an `updatedAt` from before the window opened, while the
+CLOB book had the Up side at 0.06/0.07 and Down at 0.93/0.94. `quote()` reads
+the two books and nothing else; `PolyMarket.prices_age()` says how old the
+Gamma numbers are if you are tempted.
+
+**One more thing the documentation index says.** Trading collateral is now
+described as **pUSD**, Polymarket USD, while the rewards on the sampled
+markets still name the USDC.e contract. Which token a deposit turns into is a
+question for the deployment step, not for the read side. The same index lists
+**session keys**, a separate signer with scoped, time-limited authority over a
+deposit wallet: that, not the wallet's own key, is the shape any later signer
+on the server should take.
+
+Where the process runs is a hosting choice, not a venue one. Polymarket's own
+terms and the law where you are apply wherever the server sits, and nothing in
+this repository is built to route around either. The read side needs no key at
+all, so the first thing to deploy is a watcher that only logs what the quote
+was when the gates fired.
+
+### The one measurement a backtest cannot make
+
+Every backtest in this repository prices its bets at a quote it invented. The
+four pre-registered runs establish that the signal predicts the next five-minute
+bar; none of them establishes that anyone will sell you that bar at a fair
+price. From the probe's own log, three minutes into a window the book was Up
+**0.06 / 0.07** against Down 0.93 / 0.94. If that is where the market already
+is when the bar closes, a 53% signal is worth nothing at it.
+
+`btc5m watch` measures it and places nothing:
+
+```bash
+python -m btc5m watch --config configs/fade-flow-pooled-5m.json \
+    --venue polymarket-btc-5m --windows 12 --out quotes.csv
+python -m btc5m settle --quotes quotes.csv     # who won, once windows have ended
+python -m btc5m report --quotes quotes.csv --config configs/fade-flow-pooled-5m.json
+```
+
+Each window, at 5, 15 and 30 seconds in, it reads both sides' books from the
+CLOB and the engine's verdict on the bar that closed at the window's open, and
+appends one row: the two books, the depth at the touch, the overround, the side
+the stack wants, the price that side actually costs with Polymarket's own
+per-share fee, and the edge left over. `report` then splits those rows by
+whether the gates fired. Three things it is built to catch rather than hide:
+
+| | |
+|---|---|
+| A window with no market, or a side with no asks | still writes a row, with the reason in `note` |
+| A bar feed that lags | `bar_lag` is `window_start - bar_ts`, and 0 is the only correct value. A feed one bar behind is measuring the previous window |
+| Gamma's stale prices | never read: the price is the CLOB book's best ask |
+
+The fee charged here is Polymarket's exact `0.07 × p × (1−p)`, not the flat 175
+basis points the backtest approximates it with. The live path knows the price,
+so it can charge what the venue charges.
+
+**The bar feed is the part that breaks in the cloud.** `api.binance.com` answers
+a US cloud IP with HTTP 451, and the flow gate needs Binance's taker-buy volume,
+which no other exchange in `data.py` publishes. So `binance-vision`, Binance's
+public data mirror, is now a data source in its own right: same payload, same
+fields, no geo-restriction. The watcher tries the main host first and falls back
+to the mirror, printing which one answered. `.github/workflows/polymarket-watch.yml`
+runs an hour of windows on a runner and prints the report in the job summary.
+
+**An hour is an anecdote.** Twelve windows put a standard error of about 14
+points on any hit rate, so the run answers the quote question and not the edge
+question. Accumulating enough windows to answer the second is what a small
+always-on box is for, and the quote question is the one that can end the project
+in an afternoon.
+
+### What the first live hour said
+
+Two runs, 72 readings, **15 distinct windows** between 2026-09-15 23:05 and
+2026-09-16 00:20 UTC. They overlap by nine windows, so this is one hour of the
+market seen twice, not two independent hours.
+[Run 35033962877](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35033962877),
+[run 35035064820](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35035064820).
+
+The rig works, in both: both sides priced on all 72 readings, **zero notes**,
+**bar lag 0 everywhere**, and `settle` resolved every ended window.
+`api.binance.com` was blocked as expected and the mirror answered, silently and
+correctly.
+
+The market is **not** near even.
+
+| seconds in | cheap ask | dear ask | overround | median skew, run 1 | run 2 |
+|---|---|---|---|---|---|
+| +5s | 0.420 | 0.590 | +0.0100 | 0.085 | 0.080 |
+| +15s | 0.455 | 0.555 | +0.0100 | 0.065 | 0.085 |
+| +30s | 0.425 | 0.585 | +0.0100 | 0.085 | 0.128 |
+
+Five seconds after a window opens, the typical market is already **8 to 8.5
+points from even**, and 28% of readings were within 5 points in both runs. Three
+of the twelve windows in the first run were past the 12-point `max_entry_skew`
+limit at +5 seconds, so they could not have been entered at all.
+
+**The overround was exactly one cent in all 72 readings.** The book is one tick
+wide on both sides, with 172 to 611 shares at the touch against a 15-share
+stake, so crossing it costs a cent and liquidity is not the constraint at this
+size. That is the one number here with enough repetition behind it to lean on.
+
+**The rest is a small sample, and the two runs show it.** At +30 seconds the
+median skew was 0.085 in one and 0.128 in the other — one below the venue's
+entry limit and one above it — on windows that mostly coincide. A twelve-window
+median moves that much on three windows of difference, so read the table as an
+order of magnitude and nothing finer.
+
+**That turns the whole question into one question.** All in, at Polymarket's own
+fee:
+
+| | price | hit rate it needs |
+|---|---|---|
+| the cheap side | 0.420 | **43.7%** |
+| the dear side | 0.590 | **60.7%** |
+
+A 53% signal clears the cheap side by nine points and misses the dear side by
+eight. So the edge does not depend on the market being even — it depends on
+**which side the stack wants**. That is now the measurement, and `report` asks it
+directly: the signal fades the bar that just closed, so if the market is pricing
+that move continuing, the fade side is the cheap one.
+
+**No gate fired in twelve windows, and that is the expected outcome.** The pooled
+config fires on about one bar in twenty, so twelve windows expect half a signal
+and produce none 58% of the time. Ten fired gates need roughly 230 windows,
+nineteen hours. The conditional half of this measurement is therefore not
+something a workflow run can answer, which is the case for the box rather than a
+finding about the strategy.
+
+### Which price settles the bet, which may not be the one measured
+
+Every backtest in this repository settles a window on Binance 5-minute
+close-to-close. Polymarket does not. A live market's own text reads:
+
+> resolve to "Up" if the time-weighted average price (TWAP) of Bitcoin,
+> generated by Chainlink, of the time range specified in the title is greater
+> than or equal to the price at the beginning of that range
+
+and it names the `btc-usd-twap-60s-streams` feed. That sentence and that feed
+admit four readings, and they are four different bets:
+
+| rule | what it compares |
+|---|---|
+| `close_to_close` | the last price of the window against the first. **What every number here assumes** |
+| `twap_window` | the average price *over* the window against the price at its start. The literal reading |
+| `twap60_ends` | the 60-second average at the end against the 60 seconds before the start. What reading the stream twice gives you |
+| `twap60_vs_open` | the 60-second average at the end against the price at the start |
+
+`btc5m settlement` measures all four from minute bars:
+
+```bash
+python -m btc5m settlement --minute year-1m.csv --data year.csv \
+    --config configs/fade-flow-pooled-5m.json
+```
+
+**A disagreement rate is not a loss, and the difference matters.** If the paid
+side flips on a fraction `f` of windows and the flips fall independently of
+whether the bet was right, a hit rate `p` becomes `p − f(2p − 1)`: at 53%, a 5%
+flip rate costs a third of a point, and it takes a 21% flip rate to erase a
+1.3-point edge. That is the benign case. The malign case is flips that land on
+the bets the signal got right, which costs the full rate — and independence
+cannot be assumed, because the windows where the rules disagree are the close
+ones, which is where a five-minute signal does its work.
+
+So the command reports the disagreement rate and then the number that actually
+decides it: **the pooled config's own hit rate under each rule, on the windows it
+bet.** Every value in this strategy was chosen against `close_to_close`. If the
+venue settles on one of the others, those choices were made against the wrong
+target and the pre-registered runs measured a bet nobody can place.
+
+Given a settled CSV from `btc5m watch`, `--quotes` also scores the four rules
+against what the venue actually paid, which is the only way to learn which
+sentence was meant. Only a window where the rules disagree is evidence, so that
+count is the real sample size and it accumulates slowly.
+
+A minute bar is not a TWAP: the proxy is the minute's typical price,
+`(high + low + close) / 3`. These are estimates of the disagreement, and what
+they establish is its order of magnitude.
+
+#### Measured, and it is the difference between an edge and no edge
+
+A year of real minute bars, the year ending 2026-09-13, 105,119 complete
+windows, against the pooled config's 4,246 signals (4.04% of bars).
+[Run 35039612656.](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35039612656)
+
+| rule | pays the other side, on the signals | hit rate | vs 52.00% |
+|---|---|---|---|
+| `close_to_close` | — (the baseline) | 53.77% | **+1.77%** |
+| `twap_window` | 723 of 4,246 (17.0%) | 53.89% | **+1.89%** |
+| `twap60_ends` | 393 of 4,246 (9.3%) | **49.69%** | **−2.31%** |
+| `twap60_vs_open` | 279 of 4,246 (6.6%) | 54.07% | **+2.07%** |
+
+Three of the four readings leave the edge intact. One destroys it: under
+`twap60_ends` the signal wins 49.69% — below break-even, and below a coin
+flip.
+
+**And the disagreement rate does not predict which.** `twap_window` flips
+nearly twice as many windows as `twap60_ends` and costs nothing; the flips
+that matter are the ones that land on bets the signal got right. Decomposing
+them:
+
+| rule | flips | of those, flips that destroyed a win |
+|---|---|---|
+| `twap_window` | 723 | 49.7% |
+| `twap60_vs_open` | 279 | 47.7% |
+| `twap60_ends` | 393 | **72.0%** |
+
+A flip falling at random would destroy a win 53.8% of the time, the baseline
+hit rate. Two rules sit just under that, which is why they cost nothing.
+`twap60_ends` sits at 72%, which is why 9% of windows cost 4 points of hit
+rate. There is a structural reason available: `twap60_ends` is the only
+reading whose reference point is the average of the minute *before* the
+window — the last minute of the very bar the signal is fading — so its
+baseline is correlated with the trigger by construction.
+
+**The words favour the benign readings; the feed's name favours the malign
+one.** The text compares a TWAP to "the price at the beginning of that
+range", and a price is not a TWAP, which points at `twap_window` or
+`twap60_vs_open`. But the feed is a 60-second TWAP stream, and the obvious way
+to implement a comparison with it is to read it at both ends, which is
+`twap60_ends`. The two most plausible readings are the best case and the worst
+case, so this cannot be left to a reading.
+
+`btc5m watch` now settles it empirically: every session scores the four
+readings against windows the venue itself resolved. Only a window where the
+readings disagree is evidence, and those are 6% to 17% of windows, so the
+sample accumulates at a few a day.
+
+### Running it on a box, which is a read-only service
+
+`deploy/` holds the whole recipe: a Dockerfile, three systemd units and a
+[runbook](deploy/README.md). What it deploys is one process that reads two
+public APIs and appends a CSV. It holds no key, signs nothing, and there is no
+order path in this repository for it to reach, so the security posture is short:
+no inbound ports at all, outbound 443, an unprivileged user, and one writable
+directory.
+
+`--windows 0` runs until something stops it, which on a box is systemd.
+
+**The clock is the load-bearing part.** Windows start on five-minute boundaries,
+the entry budget is 30 seconds, and the watcher records the book at +5, +15 and
++30 seconds. A clock ten seconds slow produces no error and no warning: it
+produces a file full of readings that claim an offset they were not taken at,
+and nothing downstream can detect it. So the unit starts after `chronyd`, and
+the runbook's first check is `chronyc tracking`. On EC2 the region provides a
+clock at 169.254.169.123; confirm it rather than assume it.
+
+Everything in `deploy/` is checked against the code it claims to run:
+`tests/test_deploy.py` parses every `ExecStart` and the Dockerfile's `CMD` with
+the real argument parser, so a renamed flag fails the suite instead of quietly
+producing an empty CSV on a box nobody is watching. It also asserts what is not
+there: no unit carries an `Environment=` line, and no deployment file contains
+anything key-shaped.
+
+Where the box sits is a hosting choice and nothing more. Polymarket's own terms
+and the law where you are apply wherever the server is, and nothing here is
+built to route around either.
+
 ### What is not built: signing and sending
 
 The engine decides. It does not place orders, and the gap is real:
@@ -823,7 +1588,7 @@ The engine decides. It does not place orders, and the gap is real:
   not a trading balance. Anything that asks for it is a theft.
 - Automate from a **separate hot wallet** holding only what you can lose, with
   its key in an environment variable or a hardware signer, never in git.
-- Latency matters. The entry window is 45 seconds; measure the full round trip
+- Latency matters. The entry window is 30 seconds; measure the full round trip
   before trusting that default.
 
 The honest next step is to run `quote` against live markets and place bets by
@@ -856,8 +1621,16 @@ the same config on five seeds never used for selection, 1,042 days:
 
 The chosen stack's edge fell from +7.17% to +5.42%. The ranking held and the
 losing variant stayed negative, but the magnitude dropped by a quarter purely
-from having selected on the first sample. Expect the same when you move from your
-backtest to live, and then expect another haircut for slippage and latency.
+from having selected on the first sample.
+
+**That haircut was measured inside the generator, and it was nowhere near big
+enough.** Holding out unseen *seeds* only tests robustness to the generator's own
+randomness, not to being wrong about the process — the seeds shared the
+generator, and the generator shared the assumption. The real out-of-sample number
+turned out to be **−2.82%**, a further 8-point drop that no amount of unseen-seed
+testing was ever going to reveal. Treat this whole section as a worked example of
+a validation that felt rigorous and measured the wrong thing: unseen data from
+the same source is not out-of-sample.
 
 *Your payout dominates everything.* A +2.6 point edge is comfortable at 1.95x and
 gone at 1.80x. Measure your venue's real fill, not its advertised one.
@@ -866,10 +1639,17 @@ gone at 1.80x. Measure your venue's real fill, not its advertised one.
 
 ## Going live
 
+**Not with this stack.** Step 1 below already ran, and it came back negative — see
+[the result](#one-year-backtest-the-strategy-does-not-work). The list stays
+because it is the right order for any signal, including a replacement, and
+because step 1 is what killed this one.
+
 The engine will not stop you from doing this badly. In order:
 
-1. **Get real history.** A year of 5-minute bars is about 105,000 bars. Anything
-   under a few months cannot distinguish a 2-point edge from noise.
+1. **Get real history first, before tuning anything.** `btc5m fetch --year` is one
+   command; there is no excuse for a synthetic-only result, and this repository
+   spent its entire development on one. A year of 5-minute bars is about 105,000.
+   Anything under a few months cannot distinguish a 2-point edge from noise.
 2. **Set your real payout and fees** in the config. Nothing else matters until
    this is right.
 3. **Run `gates`, `compare` and `overlap`** on your data. Do not assume the
@@ -882,7 +1662,9 @@ The engine will not stop you from doing this badly. In order:
 5. **Hold out the last few months** and never tune against them.
 6. **Paper trade against the live feed.** This is where latency, the unclosed
    bar, and the difference between your close and the venue's settlement price
-   show up. The `timing` condition exists for exactly these.
+   show up. The `timing` condition exists for exactly these. `btc5m watch` is
+   this step: it records the real book next to the engine's verdict, window by
+   window, and places nothing.
 7. **Start at a fraction of the sized stake.** Leave `halt_when_unhealthy` on.
 
 Two things this repository does not do, on purpose: it does not place orders, and
@@ -904,12 +1686,17 @@ btc5m/
   attribution.py  what each gate and each stack is actually worth
   redundancy.py   whether the gates and conditions overlap, and by how much
   venue.py        live contract quotes, the window clock, gas and sizing
+  predictfun.py   predict.fun read side: markets, books, the probe
+  polymarket.py   Polymarket read side: Gamma metadata, CLOB books, the probe
+  watch.py        live quote watcher: what the book offered when the gates fired
+  settlement.py   which price decides the bet, and what each reading would pay
   data.py         CSV, live exchange fetch, seeded synthetic bars
   config.py       every threshold, validated
   cli.py          python -m btc5m ...
 configs/          default, conservative, prediction-market,
                   predict-fun-bnb-5m, polymarket-5m
-tests/            348 tests
+deploy/           Dockerfile, systemd units and the runbook for a small box
+tests/            536 tests
 ```
 
 The load-bearing test is `test_a_signal_does_not_change_when_the_future_is_removed`:
@@ -919,7 +1706,7 @@ them. Look-ahead bias is what makes short-horizon systems look profitable on
 paper and lose money live, so it is tested directly rather than assumed.
 
 ```bash
-python -m pytest tests/ -q      # 348 passed
+python -m pytest tests/ -q      # 536 passed
 ```
 
 ---

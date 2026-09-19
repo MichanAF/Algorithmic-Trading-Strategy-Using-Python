@@ -620,9 +620,54 @@ class CrossAssetGate(Gate):
 # registry
 # --------------------------------------------------------------------------- #
 
+class TakerFlowGate(Gate):
+    """Directional -- who is aggressing, and is it unusual?
+
+    Reads the taker-buy share of each bar's volume, which Binance publishes in
+    every kline and which the archives carry.  A z-score against the last day
+    says whether the current imbalance is out of the ordinary; ``mode`` says
+    whether an unusual imbalance is followed or faded.
+
+    This is the only gate in the menu whose input is not a function of price.
+    That is the point of it: every price-derived gate measured at or below
+    break-even on real BTC, and a stack of them can only re-ask the same
+    question.  Flow is a different question.  Whether it has an answer at a
+    five-minute horizon is what the development year decides.
+    """
+
+    name = "taker_flow"
+    params_key = "taker_flow"
+    requires = ("taker_ratio", "taker_z", "volume_ratio")
+
+    def _evaluate(self, fs, i, p):
+        ratio = fs.get("taker_ratio", i)
+        z = fs.get("taker_z", i)
+        vol_ratio = fs.get("volume_ratio", i)
+        buyers = ratio > 0.5
+        # "follow" rides the aggressors; "fade" bets the aggression is a climax.
+        if p.mode == "fade":
+            direction = DOWN if buyers else UP if ratio < 0.5 else FLAT
+        else:
+            direction = UP if buyers else DOWN if ratio < 0.5 else FLAT
+        checks = [
+            Check("flow_has_side", direction != FLAT,
+                  f"taker buy share {ratio:.3f} vs 0.500 -> "
+                  f"{direction_name(direction)} ({p.mode})"),
+            Check("flow_unusual", abs(z) >= p.min_abs_z,
+                  f"imbalance z {z:+.2f} vs +/-{p.min_abs_z}"),
+            Check("volume_backs_it", vol_ratio >= p.min_volume_ratio,
+                  f"volume {vol_ratio:.2f}x median >= {p.min_volume_ratio}"),
+        ]
+        ok = all(c.passed for c in checks)
+        score = _saturate(abs(z), p.min_abs_z, p.min_abs_z + p.score_span)
+        return self._result(ok, direction if ok else FLAT, score if ok else 0.0,
+                            checks, note=f"share {ratio:.3f}, z {z:+.2f}")
+
+
 GATE_REGISTRY: dict[str, Gate] = {
     g.name: g for g in (
         DataIntegrityGate(),
+        TakerFlowGate(),
         VolatilityRegimeGate(),
         SessionGate(),
         TrendAlignmentGate(),

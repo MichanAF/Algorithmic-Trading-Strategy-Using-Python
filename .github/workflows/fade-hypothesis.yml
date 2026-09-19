@@ -1,0 +1,175 @@
+# Test one pre-registered hypothesis on history nobody has examined.
+#
+# The trend-following stack was falsified on a real year of BTCUSDT 5-minute
+# bars: every trend gate significantly below break-even, trend_alignment at
+# z = -17.7.  The only gate with a positive sign was mean_reversion, which is
+# also the direction the lag-1 autocorrelation (about -0.03) points.  That is a
+# hypothesis, and this workflow tests it the only way a backtest can be trusted:
+#
+#   development  the year ending 2024-09-13   never examined before this run
+#   holdout      the year ending 2025-09-13   never examined; touched ONCE
+#   contaminated the year ending 2026-09-13   its gate scores were read while
+#                                             choosing the hypothesis, so it is
+#                                             reported as a third, lower-trust
+#                                             confirmation only
+#
+# The config under test is configs/fade-5m.json, fixed before any of this data
+# was fetched, with its pass criterion written inside it.  Its third gate,
+# session, exists only because the validator requires three: a clock veto with
+# no direction vote and no feature in common with mean_reversion, pinned open.
+# If that file changes after a holdout result has been read, the holdout is
+# burned: cut a fresh one from earlier history rather than re-reading this one.
+#
+# This workflow deliberately has no inputs.  A parameter sweep here would be
+# the same selection error that produced the original +6.11%.
+
+name: Fade hypothesis
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/configs/fade-5m.json'
+      - 'btc_5m_binary/btc5m/**'
+      - '!btc_5m_binary/btc5m/polymarket.py'
+      - '!btc_5m_binary/btc5m/predictfun.py'
+      - '!btc_5m_binary/btc5m/watch.py'
+      - '.github/workflows/fade-hypothesis.yml'
+  workflow_dispatch:
+
+jobs:
+  fade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # Three contiguous, non-overlapping years.  --end is midnight UTC, and the
+      # series ends on the last bar closing at or before it, so the year ending
+      # 2024-09-13 finishes on the bar the next one starts after.
+      - name: Fetch the development year
+        run: |
+          python -m btc5m fetch --year --end 2024-09-13 -o dev.csv | tee fetch-dev.log
+
+      - name: Fetch the holdout year
+        run: |
+          python -m btc5m fetch --year --end 2025-09-13 -o holdout.csv | tee fetch-holdout.log
+
+      - name: Fetch the contaminated year
+        run: |
+          python -m btc5m fetch --year --end 2026-09-13 -o seen.csv | tee fetch-seen.log
+
+      # Score every gate on the development year.  This is the only place a
+      # verdict on the direction vote should be formed; the holdout confirms or
+      # refutes it and is never used to choose.
+      - name: Score every gate on the development year
+        run: |
+          python -m btc5m gates --data dev.csv \
+            --config configs/fade-5m.json | tee gates-dev.log
+
+      - name: Backtest the fade config on the development year
+        run: |
+          python -m btc5m backtest --data dev.csv \
+            --config configs/fade-5m.json | tee backtest-dev.log
+
+      - name: Backtest the fade config on the holdout year
+        run: |
+          python -m btc5m backtest --data holdout.csv \
+            --config configs/fade-5m.json | tee backtest-holdout.log
+
+      - name: Score every gate on the holdout year
+        run: |
+          python -m btc5m gates --data holdout.csv \
+            --config configs/fade-5m.json | tee gates-holdout.log
+
+      - name: Backtest the fade config on the contaminated year
+        run: |
+          python -m btc5m backtest --data seen.csv \
+            --config configs/fade-5m.json | tee backtest-seen.log
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib, re
+
+          def field(log, label):
+              text = pathlib.Path(log).read_text() if os.path.exists(log) else ""
+              m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text, re.M)
+              return m.group(1).strip() if m else "—"
+
+          def gate_row(log, gate):
+              text = pathlib.Path(log).read_text() if os.path.exists(log) else ""
+              m = re.search(rf"^\s*{re.escape(gate)}\s+(.*)$", text, re.M)
+              return m.group(1).strip() if m else "—"
+
+          print("## Fade hypothesis — configs/fade-5m.json\n")
+          print("Pre-registered pass criterion, on the **holdout**: `mean_reversion` "
+                "edge vs 52.00% break-even above **+1.0%** with **z ≥ +2**, and the "
+                "backtest does not halt. Anything less fails.\n")
+
+          for label, log in (("development", "fetch-dev.log"),
+                             ("holdout", "fetch-holdout.log"),
+                             ("contaminated", "fetch-seen.log")):
+              text = pathlib.Path(log).read_text().strip() if os.path.exists(log) else "fetch failed"
+              print(f"- **{label}**: `{text.splitlines()[-2] if len(text.splitlines()) > 1 else text}`")
+
+          print("\n### `mean_reversion` vote, from the gate table\n")
+          print("| | signals | per day | accuracy | vs b/e | z | verdict |")
+          print("|---|---|---|---|---|---|---|")
+          for label, log in (("development", "gates-dev.log"),
+                             ("**holdout**", "gates-holdout.log")):
+              row = gate_row(log, "mean_reversion")
+              cells = row.split()
+              if len(cells) >= 5:
+                  print(f"| {label} | {cells[0]} | {cells[1]} | {cells[2]} | "
+                        f"{cells[3]} | {cells[4]} | {' '.join(cells[5:])} |")
+              else:
+                  print(f"| {label} | {row} | | | | | |")
+
+          print("\n### Backtest, fade config\n")
+          rows = ["bets placed", "hit rate", "break-even needed",
+                  "edge vs break-even", "max drawdown", "annualised Sharpe",
+                  "HALTED"]
+          print("| | development | **holdout** | contaminated |")
+          print("|---|---|---|---|")
+          for label in rows:
+              bold = "**" if label == "edge vs break-even" else ""
+              print(f"| {bold}{label}{bold} | {field('backtest-dev.log', label)} "
+                    f"| {field('backtest-holdout.log', label)} "
+                    f"| {field('backtest-seen.log', label)} |")
+
+          print("\n**Read the holdout column.** The development column is where the "
+                "idea was allowed to look good; the holdout is where it has to be. "
+                "The contaminated column is the year whose gate scores were read "
+                "while choosing this hypothesis, so agreement there is weaker "
+                "evidence than the other two.\n")
+          print("If the holdout fails the criterion, the hypothesis is dead. Do not "
+                "edit `configs/fade-5m.json` and re-run: that burns the holdout. Cut "
+                "a fresh one from earlier history with `fetch --end`.")
+          PY
+
+      - name: Keep the candles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-5m-three-years
+          path: |
+            btc_5m_binary/dev.csv
+            btc_5m_binary/holdout.csv
+            btc_5m_binary/seen.csv
+          if-no-files-found: warn
+          retention-days: 30

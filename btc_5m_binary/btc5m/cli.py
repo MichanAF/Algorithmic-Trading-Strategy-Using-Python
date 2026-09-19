@@ -5,10 +5,17 @@
     python -m btc5m gates    --data btc_5m.csv       # what is each gate worth?
     python -m btc5m compare  --data btc_5m.csv       # which stack should I run?
     python -m btc5m overlap  --data btc_5m.csv       # are the gates independent?
+    python -m btc5m flow     --data btc_5m.csv --minute btc_1m.csv   # does pre-open flow predict?
     python -m btc5m quote    --data btc_5m.csv --down 51   # price a live market
     python -m btc5m probe    --testnet                     # see predict.fun's real payload
+    python -m btc5m probe    --venue polymarket-btc-5m    # see Polymarket's real payload
+    python -m btc5m watch    --windows 12 --out quotes.csv  # log the live quote, no orders
+    python -m btc5m settle   --quotes quotes.csv           # fill in who won
+    python -m btc5m report   --quotes quotes.csv           # was the market ever near even?
+    python -m btc5m settlement --minute y-1m.csv --data y.csv  # is it even the same bet?
     python -m btc5m live     --data btc_5m.csv --testnet   # price the live window
     python -m btc5m fetch    --exchange binance -o btc_5m.csv
+    python -m btc5m fetch    --interval 1m --year -o btc_1m.csv      # minute bars for --minute
     python -m btc5m menu                             # the gate menu
 """
 
@@ -17,17 +24,27 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .attribution import compare_stacks, gate_edge, render_table
+from .attribution import (compare_stacks, flow_correlation, flow_edge, gate_edge,
+                          render_flow, render_table)
 from .redundancy import full_report
 from .backtest import run_backtest
 from .config import (DEFAULT_GATE_STACK, StrategyConfig, config_from_dict,
                      load_config, to_dict)
-from .data import (BarSeries, fetch_binance_dump, fetch_history,
-                   fetch_klines, load_csv, synthetic)
-from .venue import VENUES, MarketQuote, evaluate_market, minimum_viable_stake
+from .data import (EXCHANGES, INTERVAL_SECONDS, BarSeries, fetch_binance_dump,
+                   fetch_history, fetch_klines, load_csv, synthetic)
+from .venue import (POLYMARKET_BTC_5M, VENUES, MarketQuote, evaluate_market,
+                    minimum_viable_stake)
 from .predictfun import PredictFunClient, PredictFunError, probe as probe_predictfun
+from .polymarket import PolymarketClient, probe as probe_polymarket
+from .settlement import (compare as compare_settlement, hit_rates,
+                         render_comparison, render_hit_rates,
+                         render_venue_scores, score_against_venue,
+                         window_prices)
+from .watch import (DEFAULT_OFFSETS, Watcher, read_rows, render_report,
+                    settle as settle_quotes)
 from .features import build_features
 from .gates import GATE_REGISTRY
 from .signal import SignalEngine
@@ -61,8 +78,10 @@ PRESETS: dict[str, list[str]] = {
 def _add_data_args(p: argparse.ArgumentParser, reference: bool = True) -> None:
     src = p.add_argument_group("data source (pick one)")
     src.add_argument("--data", metavar="CSV", help="5-minute OHLCV CSV file")
-    src.add_argument("--exchange", choices=("binance", "coinbase", "kraken"),
-                     help="fetch recent closed 5m candles live")
+    src.add_argument("--exchange", choices=EXCHANGES,
+                     help="fetch recent closed 5m candles live "
+                          "(binance-vision is Binance's public mirror, which "
+                          "answers where api.binance.com is geo-blocked)")
     src.add_argument("--symbol", help="exchange symbol override")
     src.add_argument("--limit", type=int, default=1000,
                      help="candles to fetch (default: 1000)")
@@ -72,6 +91,9 @@ def _add_data_args(p: argparse.ArgumentParser, reference: bool = True) -> None:
     if reference:
         src.add_argument("--reference", metavar="CSV",
                          help="correlated series (ETH) for the cross_asset gate")
+    src.add_argument("--minute", metavar="CSV",
+                     help="1-minute bars of the same symbol, read when "
+                          "gates.taker_flow.source is 1m (fetch --interval 1m)")
 
 
 def _add_config_args(p: argparse.ArgumentParser) -> None:
@@ -174,6 +196,29 @@ def _load_reference(args) -> BarSeries | None:
     return load_csv(path) if path else None
 
 
+def _load_minute(args) -> BarSeries | None:
+    path = getattr(args, "minute", None)
+    if not path:
+        return None
+    minute = load_csv(path)
+    if minute.bar_seconds != 60:
+        raise SystemExit(f"--minute {path} holds {minute.bar_seconds}-second "
+                         f"bars, not 1-minute ones; fetch it with --interval 1m")
+    if minute.taker_buy is None:
+        raise SystemExit(f"--minute {path} has no taker_buy column; only a "
+                         f"binance fetch carries it")
+    return minute
+
+
+def _note_minute(cfg: StrategyConfig, minute: BarSeries | None) -> None:
+    """A 1m-sourced taker_flow gate with no minute series never fires."""
+    tf = cfg.gates.taker_flow
+    if tf.source == "1m" and minute is None and "taker_flow" in cfg.gate_stack:
+        print("note: gates.taker_flow.source is 1m but no --minute CSV was "
+              "given, so taker_flow stays in warm-up and never votes.",
+              file=sys.stderr)
+
+
 def _warn_if_synthetic(args) -> None:
     if getattr(args, "synthetic", None) is not None:
         print("note: synthetic bars. These validate the machinery, not the edge.\n",
@@ -188,7 +233,10 @@ def cmd_backtest(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    result = run_backtest(series, cfg, reference=_load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    result = run_backtest(series, cfg, reference=_load_reference(args),
+                          minute=minute)
     print(result.summary())
     if args.json:
         Path(args.json).write_text(json.dumps({
@@ -212,7 +260,9 @@ def cmd_signal(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    fs = build_features(series, cfg, _load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    fs = build_features(series, cfg, _load_reference(args), minute=minute)
     engine = SignalEngine(cfg)
     warmup = engine.warmup_bars(fs)
     index = args.bar if args.bar is not None else len(series) - 1
@@ -253,12 +303,65 @@ def cmd_gates(args) -> int:
     cfg = _build_config(args)
     series = _load_series(args)
     _warn_if_synthetic(args)
-    stats = gate_edge(series, cfg, reference=_load_reference(args))
+    minute = _load_minute(args)
+    _note_minute(cfg, minute)
+    stats = gate_edge(series, cfg, reference=_load_reference(args), minute=minute)
     print(render_table(stats, "What is each gate's directional vote worth?"))
     print("\nRead z before accuracy: it is how many standard errors the hit rate")
     print("sits above break-even. Under +2, the gate has shown you nothing yet.")
     print("Gates can be worth less alone than in combination -- a filter that is")
     print("neutral on its own can still sharpen a stack. Check with `compare`.")
+    return 0
+
+
+def _number_list(text: str, cast, flag: str) -> list:
+    try:
+        values = [cast(part) for part in text.split(",") if part.strip()]
+    except ValueError:
+        raise SystemExit(f"{flag} expects comma-separated numbers, got {text!r}")
+    if not values:
+        raise SystemExit(f"{flag} is empty")
+    return values
+
+
+def cmd_flow(args) -> int:
+    """Does who was aggressing just before the window opens predict it?"""
+    cfg = _build_config(args)
+    series = _load_series(args)
+    _warn_if_synthetic(args)
+    minute = _load_minute(args)
+    windows = _number_list(args.windows, int, "--windows")
+    thresholds = _number_list(args.thresholds, float, "--thresholds")
+    floors = _number_list(args.volume_floors, float, "--volume-floors")
+    if any(w < 0 for w in windows):
+        raise SystemExit("--windows takes minutes >= 1, or 0 for the bar's own share")
+    if any(x < 0 for x in floors):
+        raise SystemExit("--volume-floors takes multiples of median volume >= 0")
+    if series.taker_buy is None and 0 in windows:
+        raise SystemExit("--data has no taker_buy column, so the full-bar share "
+                         "cannot be read; fetch the series from binance")
+    if minute is None:
+        dropped = [w for w in windows if w > 0]
+        windows = [w for w in windows if w == 0]
+        if dropped:
+            print(f"note: no --minute CSV, so the minute windows {dropped} are "
+                  f"skipped; fetch one with `fetch --interval 1m`.",
+                  file=sys.stderr)
+        if not windows:
+            raise SystemExit("nothing to measure: give --minute, or --windows 0")
+
+    corrs = flow_correlation(series, cfg, minute, windows)
+    cells = flow_edge(series, cfg, minute, windows, thresholds, floors)
+    print(render_flow(corrs, cells,
+                      "Does the taker share just before the open predict the window?"))
+    print("\nRead the first table's sign before anything else: negative means the")
+    print("flow reverted over the next window (bet against it: fade), positive")
+    print("means it carried (follow). Inside the noise band it said nothing.")
+    print("The grid then shows what a |z| floor buys: fewer signals, and whether")
+    print("the ones that remain beat break-even. follow and fade are exact")
+    print("complements on the same signals, so only the better side has a z.")
+    print("This is a development-year measurement. Pick values from it, write")
+    print("them into a config, and test that config once on unseen history.")
     return 0
 
 
@@ -342,7 +445,14 @@ def cmd_quote(args) -> int:
 
 
 def cmd_probe(args) -> int:
-    """Print predict.fun's real payload shapes so the field guesses can be fixed."""
+    """Print a venue's real payload shapes so the field guesses can be fixed.
+
+    predict.fun needs a key on mainnet; Polymarket's read side needs nothing.
+    Neither path signs anything.
+    """
+    if args.venue == "polymarket-btc-5m":
+        print(probe_polymarket(PolymarketClient(), limit=args.limit))
+        return 0
     client = PredictFunClient(api_key=args.api_key, testnet=args.testnet)
     print(probe_predictfun(client, limit=args.limit))
     return 0
@@ -392,16 +502,212 @@ def cmd_live(args) -> int:
     return 0
 
 
+def _bar_feed(args):
+    """A callable returning the freshest bars, for the watcher to call per window.
+
+    A CSV is read once and reused, which is right for a dry run and wrong for a
+    live session, so it says so.  A live feed is refetched every window, and
+    Binance's mirror stands in for the main host when that is geo-blocked --
+    which it is from most cloud regions, and which would otherwise leave the
+    flow gate with no taker volume at all.
+    """
+    if getattr(args, "synthetic", None) is not None:
+        raise SystemExit(
+            "a live watcher cannot run on generated bars: --synthetic would be "
+            "watching the real market against invented history. Drop it to fetch "
+            "live candles, or pass --data FILE.csv for a dry run.")
+    if getattr(args, "data", None):
+        series = load_csv(args.data)
+        print(f"bars      {args.data}: {len(series):,} static bars, last "
+              f"{series.time_at(len(series) - 1):%Y-%m-%d %H:%M} UTC")
+        print("          (a file does not refresh; every window will read the "
+              "same last bar. Use --exchange for a live session.)")
+        return lambda: series
+
+    wanted = getattr(args, "exchange", None) or "binance"
+    chain = [wanted] + (["binance-vision"] if wanted == "binance" else [])
+    state = {"host": None}
+
+    def feed():
+        errors = []
+        for host in ([state["host"]] if state["host"] else chain):
+            try:
+                series = fetch_klines(host, args.symbol, args.limit)
+            except (RuntimeError, ValueError) as exc:
+                errors.append(f"{host}: {exc}")
+                continue
+            if state["host"] != host:
+                print(f"bars      {host}: {len(series):,} bars, last "
+                      f"{series.time_at(len(series) - 1):%Y-%m-%d %H:%M} UTC")
+                state["host"] = host
+            return series
+        state["host"] = None
+        raise RuntimeError("; ".join(errors))
+
+    return feed
+
+
+def cmd_watch(args) -> int:
+    """Log what the book offered when the gates fired.  Reads only; no orders."""
+    cfg = _build_config(args)
+    venue = args.venue or cfg.venue
+    rules = VENUES[venue]
+    if rules is not POLYMARKET_BTC_5M:
+        raise SystemExit(
+            f"watch reads Polymarket's public API, and the venue here is {venue}. "
+            "Pass --venue polymarket-btc-5m, or a config that names it.")
+    offsets = tuple(int(x) for x in args.offsets.split(",") if x.strip())
+    watcher = Watcher(PolymarketClient(), cfg, _bar_feed(args), out=args.out,
+                      offsets=offsets, rules=rules, reference=_load_reference(args),
+                      alert=args.alert)
+    print(f"venue     {rules.name}   offsets {', '.join(f'+{o}s' for o in offsets)}")
+    # The engine's break-even comes from the config's fee basis and the price
+    # paid comes from the venue's own fee, so a mismatch is worth naming: it
+    # changes which bars count as "the gates fired".  The config is not
+    # rewritten -- several of them are pre-registered and must not be.
+    print(f"break-even {cfg.break_even_probability():.4f} from the config; "
+          f"the book is charged {rules.name}'s own fee "
+          f"({rules.fee_per_share(0.5):.4f} a share at 0.50)")
+    # Only a real mismatch is worth flagging: --set betting.fee_bps can align a
+    # config with a venue it does not name, and then there is nothing to warn of.
+    implied = rules.effective_price(0.5)
+    if abs(cfg.break_even_probability() - implied) > 5e-4:
+        print(f"          note: the config was built for {cfg.venue}. Its "
+              f"break-even is {cfg.break_even_probability():.4f} and this venue "
+              f"implies {implied:.4f}, so the gates are judged against the "
+              f"wrong one. Fix it with --set betting.fee_bps.")
+    print(f"writing   {args.out}")
+    print("windows   until stopped" if args.windows == 0 else
+          f"windows   {args.windows}  (about {args.windows * 5} minutes)")
+    if args.alert:
+        stake = cfg.risk.starting_bankroll * cfg.risk.max_stake_pct
+        print(f"alerts    on: a bet that clears every condition is printed in full. "
+              f"Stake ${stake:,.2f} of a ${cfg.risk.starting_bankroll:,.0f} bankroll.")
+        print("          This places nothing. You place it, by hand, on the venue.")
+    print()
+    rows = watcher.run(windows=args.windows)
+    print()
+    print(f"{rows} rows written to {args.out}"
+          + (f", {watcher.alerts} bet(s) called." if args.alert else ".")
+          + f" `btc5m settle --quotes {args.out}` once the windows have ended.")
+    return 0
+
+
+def cmd_settle(args) -> int:
+    """Fill in who won, for windows that have ended."""
+    filled, left = settle_quotes(PolymarketClient(), args.quotes)
+    print(f"settled {filled} window(s); {left} ended window(s) still unresolved "
+          f"at the venue")
+    return 0
+
+
+def cmd_report(args) -> int:
+    """What the quote was when the gates fired, and what it would have paid."""
+    rows = read_rows(args.quotes)
+    break_even, rules = None, None
+    if getattr(args, "config", None) or getattr(args, "set", None):
+        cfg = _build_config(args)
+        break_even = cfg.break_even_probability()
+        rules = VENUES[args.venue or cfg.venue]
+    print(render_report(rows, break_even=break_even, rules=rules))
+    return 0
+
+
+def _bets_by_window(args, cfg) -> tuple[dict[int, int], int]:
+    """Every window the config would have bet, mapped to the side it would take.
+
+    A signal on the bar closing at ``t`` bets the window that opens at ``t``, so
+    the bar's own timestamp is the window's start.
+    """
+    from .features import build_features
+    from .signal import SignalEngine
+
+    series = load_csv(args.data)
+    fs = build_features(series, cfg, _load_reference(args), _load_minute(args))
+    engine = SignalEngine(cfg)
+    bets = {}
+    for i in range(engine.warmup_bars(fs), len(series) - 1):
+        signal = engine.evaluate(fs, i)
+        if signal.tradable:
+            bets[int(series.ts[i])] = signal.side
+    return bets, len(series)
+
+
+def cmd_settlement(args) -> int:
+    """How much the venue's settlement rule differs from the one every backtest used."""
+    if not args.minute:
+        raise SystemExit("settlement needs minute bars: --minute FILE.csv "
+                         "(fetch them with `fetch --interval 1m --year`)")
+    minute = load_csv(args.minute)
+    prices = window_prices(minute)
+    print(f"minute bars  {args.minute}: {len(minute):,} rows, "
+          f"{len(prices):,} complete five-minute windows")
+    if not len(prices):
+        raise SystemExit("no complete window in those minute bars; "
+                         "fetch them with `fetch --interval 1m`")
+    print()
+
+    bets, cfg = None, None
+    if args.data:
+        cfg = _build_config(args)
+        bets, bars = _bets_by_window(args, cfg)
+        print(f"config       {len(bets):,} of {bars:,} bars would have been bet "
+              f"({100.0 * len(bets) / max(bars, 1):.2f}%)")
+        print()
+    print(render_comparison(compare_settlement(
+        prices, bet_starts=None if bets is None else bets.keys())))
+
+    # The number that decides it: not how often the rules differ, but whether the
+    # side the strategy took is the one each rule pays.
+    if bets:
+        print()
+        print(render_hit_rates(hit_rates(prices, bets),
+                               break_even=cfg.break_even_probability()))
+
+    if args.quotes:
+        settled = {row["window_start"]: row["settled"] for row in read_rows(args.quotes)
+                   if row.get("settled") and row.get("window_start")}
+        print()
+        print(render_venue_scores(*score_against_venue(prices, settled)))
+    return 0
+
+
+def _parse_end(text: str) -> datetime:
+    """A --end date, read as midnight UTC on that day.
+
+    The series then ends on the last bar closing at or before that instant, so
+    two fetches with --end one year apart are contiguous and never overlap.
+    """
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise SystemExit(f"error: --end must be YYYY-MM-DD, got {text!r}") from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def cmd_fetch(args) -> int:
     # Three paths, and the default picks between them because the right one is
     # not obvious: Binance's public archives are unmetered, 12 files for a year
     # instead of 106 requests, and -- unlike api.binance.com, which answers a US
     # IP with 451 -- not geo-restricted.  So a long Binance request goes there,
     # and the REST API is only for the recent tail or another exchange.
+    bar_seconds = INTERVAL_SECONDS[args.interval]
+    if args.year:
+        args.limit = 365 * 86_400 // bar_seconds
     source = args.source
     if source == "auto":
         source = "dump" if (args.exchange == "binance"
                             and args.limit > 1000) else "api"
+
+    # --end exists so a development set and a holdout can be cut from history
+    # that nobody has looked at yet.  A backtest on the one year already
+    # examined cannot validate anything derived from examining it.
+    end = _parse_end(args.end) if args.end else None
+    if end is not None and source == "api" and args.limit <= 1000:
+        print("error: --end needs a paged fetch; the single-request path "
+              "always returns the most recent bars. Raise --limit above 1000.",
+              file=sys.stderr)
+        return 2
 
     if source == "dump":
         if args.exchange != "binance":
@@ -415,18 +721,21 @@ def cmd_fetch(args) -> int:
                   end="", flush=True)
 
         series = fetch_binance_dump(args.symbol or "BTCUSDT", args.limit,
-                                    pause_seconds=args.pause,
-                                    progress=show_dump)
+                                    pause_seconds=args.pause, now=end,
+                                    progress=show_dump, interval=args.interval)
         print()
     elif args.limit > 1000:
         def show(held: int, wanted: int) -> None:
             print(f"\r  {held:,} / {wanted:,} bars", end="", flush=True)
 
         series = fetch_history(args.exchange, args.symbol, args.limit,
-                               pause_seconds=args.pause, progress=show)
+                               pause_seconds=args.pause, progress=show,
+                               end_ts=int(end.timestamp()) if end else None,
+                               interval=args.interval)
         print()
     else:
-        series = fetch_klines(args.exchange, args.symbol, args.limit)
+        series = fetch_klines(args.exchange, args.symbol, args.limit,
+                              interval=args.interval)
 
     if len(series) < args.limit:
         where = "binance's archives" if source == "dump" else args.exchange
@@ -435,8 +744,9 @@ def cmd_fetch(args) -> int:
               f"for {series.symbol}, or a period is missing.")
 
     path = series.write_csv(args.out)
-    days = len(series) * 300 / 86_400
-    print(f"wrote {len(series):,} closed 5m bars ({days:.1f} days) to {path}")
+    days = len(series) * bar_seconds / 86_400
+    print(f"wrote {len(series):,} closed {args.interval} bars ({days:.1f} days) "
+          f"to {path}")
     print(f"  {series.time_at(0):%Y-%m-%d %H:%M} .. "
           f"{series.time_at(-1):%Y-%m-%d %H:%M} UTC")
     gaps = series.gaps()
@@ -517,6 +827,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config_args(p)
     p.set_defaults(func=cmd_gates)
 
+    p = sub.add_parser("flow", help="does the taker share just before the open "
+                                    "predict the window?")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--windows", default="1,2,3,5,0", metavar="MIN,...",
+                   help="minutes before the open to pool from --minute; 0 is "
+                        "the 5m bar's own share (default: 1,2,3,5,0)")
+    p.add_argument("--thresholds", default="1,1.5,2,2.5", metavar="Z,...",
+                   help="|z| floors to score (default: 1,1.5,2,2.5)")
+    p.add_argument("--volume-floors", default="0", metavar="X,...",
+                   help="volume floors to score, as multiples of the bar's "
+                        "rolling median volume; 0 = none (default: 0)")
+    p.set_defaults(func=cmd_flow)
+
     p = sub.add_parser("compare", help="score candidate gate stacks")
     _add_data_args(p)
     _add_config_args(p)
@@ -546,12 +870,59 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_quote)
 
-    p = sub.add_parser("probe", help="show predict.fun's real API payload shapes")
+    p = sub.add_parser("probe", help="show a venue's real API payload shapes")
+    p.add_argument("--venue", choices=sorted(VENUES), default="predict-fun-btc-5m",
+                   help="which venue's public API to read (default: predict.fun)")
     p.add_argument("--testnet", action="store_true",
-                   help="use api-testnet.predict.fun, which needs no API key")
-    p.add_argument("--api-key", help="mainnet key; also read from PREDICT_FUN_API_KEY")
+                   help="predict.fun only: use api-testnet.predict.fun, which needs no API key")
+    p.add_argument("--api-key", help="predict.fun mainnet key; also read from PREDICT_FUN_API_KEY")
     p.add_argument("--limit", type=int, default=3)
     p.set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("watch", help="log the live quote when the gates fire "
+                                     "(reads only, places nothing)")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--venue", choices=sorted(VENUES), default=None,
+                   help="override the venue the config names (must be Polymarket)")
+    p.add_argument("--windows", type=int, default=12,
+                   help="how many five-minute windows to watch "
+                        "(default: 12, an hour; 0 watches until stopped)")
+    p.add_argument("--offsets", default=",".join(str(o) for o in DEFAULT_OFFSETS),
+                   metavar="S,S,S",
+                   help="seconds into each window to read the book "
+                        f"(default: {','.join(str(o) for o in DEFAULT_OFFSETS)})")
+    p.add_argument("--out", default="quotes.csv", metavar="CSV",
+                   help="append observations here (default: quotes.csv)")
+    p.add_argument("--alert", action="store_true",
+                   help="print the bet in full, and ring the terminal bell, when "
+                        "every betting and risk condition passes. Places nothing: "
+                        "you place it by hand on the venue")
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("settle", help="fill in who won, for windows that ended")
+    p.add_argument("--quotes", required=True, metavar="CSV",
+                   help="a CSV written by `btc5m watch`")
+    p.set_defaults(func=cmd_settle)
+
+    p = sub.add_parser("report", help="was the market near even when the gates fired?")
+    p.add_argument("--quotes", required=True, metavar="CSV",
+                   help="a CSV written by `btc5m watch`")
+    p.add_argument("--venue", choices=sorted(VENUES), default=None,
+                   help="price the rows against this venue's rules "
+                        "(default: the one the config names)")
+    _add_config_args(p)
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("settlement",
+                       help="does the venue's settlement rule pay the same side "
+                            "as the close-to-close the backtests assume?")
+    _add_data_args(p)
+    _add_config_args(p)
+    p.add_argument("--quotes", metavar="CSV",
+                   help="a settled CSV from `btc5m watch`, to score the rules "
+                        "against what the venue actually paid")
+    p.set_defaults(func=cmd_settlement)
 
     p = sub.add_parser("live", help="price the open predict.fun window")
     _add_data_args(p)
@@ -564,21 +935,30 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one line: the answer and, if no, the reason")
     p.set_defaults(func=cmd_live)
 
-    p = sub.add_parser("fetch", help="download closed 5m candles to CSV")
-    p.add_argument("--exchange", default="binance",
-                   choices=("binance", "coinbase", "kraken"))
+    p = sub.add_parser("fetch", help="download closed candles to CSV")
+    p.add_argument("--exchange", default="binance", choices=EXCHANGES,
+                   help="candle source (default: binance). binance-vision is "
+                        "Binance's public mirror, which answers where "
+                        "api.binance.com is geo-blocked; use it with --source api")
     p.add_argument("--symbol")
+    p.add_argument("--interval", default="5m", choices=sorted(INTERVAL_SECONDS),
+                   help="candle length (default 5m). 1m is binance only and "
+                        "is what --minute reads")
     p.add_argument("--limit", type=int, default=1000,
                    help="bars to fetch; above 1000 pages backwards "
-                        "(a year is 105120). kraken cannot page")
-    p.add_argument("--year", dest="limit", action="store_const", const=105_120,
-                   help="shorthand for --limit 105120")
+                        "(a year is 105120 at 5m). kraken cannot page")
+    p.add_argument("--year", action="store_true",
+                   help="one year of bars: 105120 at 5m, 525600 at 1m")
     p.add_argument("--pause", type=float, default=0.25,
                    help="seconds between requests (default 0.25)")
     p.add_argument("--source", default="auto", choices=("auto", "dump", "api"),
                    help="dump = data.binance.vision archives (unmetered, not "
                         "geo-blocked); api = the REST endpoint. auto picks dump "
                         "for binance above 1000 bars")
+    p.add_argument("--end", metavar="YYYY-MM-DD",
+                   help="end the series at midnight UTC on this date instead "
+                        "of now, to cut a development set and a holdout from "
+                        "history nobody has examined yet")
     p.add_argument("-o", "--out", default="btc_5m.csv")
     p.set_defaults(func=cmd_fetch)
 

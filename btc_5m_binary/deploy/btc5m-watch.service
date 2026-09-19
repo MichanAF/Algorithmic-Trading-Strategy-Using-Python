@@ -1,0 +1,52 @@
+# Record what Polymarket's book offered when the gates fired.  Reads only.
+#
+#   install -d -o btc5m -g btc5m /var/lib/btc5m
+#   cp deploy/btc5m-watch.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now btc5m-watch
+#
+# See deploy/README.md.  This unit holds no credentials because the read side
+# needs none; if a signer is ever added it belongs in a systemd credential or a
+# hardware device, never in this file and never in git.
+
+[Unit]
+Description=btc5m: record the live Polymarket quote when the gates fire (reads only)
+Documentation=https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python
+# The whole measurement is keyed to five-minute boundaries and a 30-second entry
+# window, so a wrong clock silently ruins the data.  Start after time sync.
+After=network-online.target chronyd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=btc5m
+Group=btc5m
+WorkingDirectory=/opt/btc5m/app
+ExecStart=/opt/btc5m/venv/bin/python -m btc5m watch \
+    --config configs/fade-flow-pooled-5m.json \
+    --venue polymarket-btc-5m \
+    --windows 0 --offsets 5,15,30 \
+    --out /var/lib/btc5m/quotes.csv
+# A window missed is a window lost, so come back quickly and keep coming back.
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# It opens outbound HTTPS and appends to one file.  Nothing else is needed.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/btc5m
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

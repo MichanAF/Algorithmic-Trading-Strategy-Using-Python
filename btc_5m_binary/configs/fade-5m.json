@@ -1,0 +1,61 @@
+{
+  "name": "btc-5m-binary-fade",
+  "symbol": "BTCUSDT",
+  "venue": "predict-fun-btc-5m",
+  "gate_stack": [
+    "data_integrity",
+    "mean_reversion",
+    "session"
+  ],
+  "_hypothesis": "Fade, do not follow. Every trend-following gate in the menu measured significantly below break-even on a real year of BTCUSDT 5-minute bars (trend_alignment 48.01%, z = -17.7; persistence z = -12.3; momentum_thrust z = -14.6; participation z = -16.7). mean_reversion was the only gate with a positive sign (53.46%, z = +1.1, not established). Real 5-minute BTC returns carry a lag-1 autocorrelation of about -0.03, which is the same direction. This config is that one hypothesis and nothing else: the mean_reversion gate as the sole direction vote, data_integrity as the precondition, and the predict.fun risk and betting settings unchanged from configs/predict-fun-bnb-5m.json.",
+  "_third_gate": "session is here because the validator requires three gates, not because it is part of the hypothesis. It was chosen before any data was seen, for two structural reasons: it is a veto with no direction vote, so it cannot pick a side, and it reads only the clock, so it shares no feature with mean_reversion. Its parameters are pinned to the library defaults: every hour allowed, weekends allowed, only a +/-5 minute blackout around the 00/08/16 UTC funding marks -- about 2% of bars. If it ever shows up as a material filter in the results, that is a finding to report, not a knob to turn.",
+  "_protocol": "Fixed on 2026-09-13 BEFORE any of the development or holdout data was fetched or examined. Development set: the year ending 2024-09-13. Holdout: the year ending 2025-09-13. The year ending 2026-09-13 is contaminated -- its gate scores were read while choosing this hypothesis -- and is reported only as a third, lower-trust confirmation. The holdout is touched once. If this file changes after a holdout result has been read, that holdout is burned and a fresh one must be cut from earlier history. Pre-registered pass criterion, on the holdout: mean_reversion edge vs the 52.00% break-even above +1.0% with z >= +2 in the gate table, AND the backtest does not halt. Anything less means the hypothesis fails and the work stops.",
+  "_params_pinned": "mean_reversion parameters are written out explicitly rather than inherited, so a later change to the defaults in config.py cannot silently alter the hypothesis under test. They are the library defaults as of the date above, untouched.",
+  "gates": {
+    "mean_reversion": {
+      "z_window": 60,
+      "min_abs_z": 1.8,
+      "exhaustion_volume_ratio": 1.5,
+      "rsi_period": 14,
+      "rsi_overbought": 72.0,
+      "rsi_oversold": 28.0,
+      "max_variance_ratio": 1.0
+    },
+    "session": {
+      "allowed_hours_utc": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "funding_hours_utc": [0, 8, 16],
+      "funding_blackout_minutes": 5,
+      "skip_weekend": false
+    }
+  },
+  "betting": {
+    "mode": "unanimous",
+    "min_conviction": 0.85,
+    "min_directional_gates": 1,
+    "payout_mode": "contract_price",
+    "contract_price": 0.5,
+    "fee_bps": 200.0,
+    "required_edge": 0.04,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "bar_seconds": 300,
+    "latency_seconds": 5,
+    "max_signal_age_seconds": 30,
+    "min_seconds_to_expiry": 60,
+    "tie_policy": "void",
+    "deadband_bps": 0.0
+  },
+  "risk": {
+    "starting_bankroll": 5000.0,
+    "kelly_fraction": 0.2,
+    "max_stake_pct": 0.0025,
+    "min_stake": 2.0,
+    "daily_loss_limit_pct": 0.04,
+    "max_drawdown_pct": 0.15,
+    "max_consecutive_losses": 4,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 6,
+    "max_concurrent_bets": 1,
+    "halt_when_unhealthy": false
+  }
+}
