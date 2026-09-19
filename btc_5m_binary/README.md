@@ -893,6 +893,58 @@ this signal ends here. What is left is not a backtest question: bankroll,
 venue and gas decide whether +2% of stake is money, and only a live quote
 says whether the market is near 50/50 when these gates fire.
 
+### The six days since, forward: 57 bets at 57.89%, and what that can say
+
+Every table above runs on a year cut with `fetch --end`, and the newest of them
+ends at 2026-09-13 00:00 UTC. The days after that instant had been read by
+nothing here, so `.github/workflows/forward-slice.yml` runs the pooled config
+on them, forward, at no cost to the three pre-registered years still unread
+([run 35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972)).
+
+`tools/slice_forward.py` cuts the slice, and the cut is the part that has to be
+right. A slice starting at the cutoff spends its first day inside the gates'
+warm-up scoring nothing; a slice starting a day early places bets inside the
+year already seen. So it asks the engine how many bars the warm-up consumes --
+287, a day of taker-flow z-scores -- and keeps exactly that many from before
+the cutoff, so the first bar the backtest grades is the first bar nobody had
+read. It prints that timestamp rather than leaving it to be assumed, and
+refuses a tail with too little history instead of quietly starting the warm-up
+after the cutoff.
+
+| | forward slice, 2026-09-13 to 2026-09-19 |
+|---|---|
+| windows evaluated | 1,727 (6.00 days, no gaps in either interval) |
+| tradable signals / bets | 58 / 57 (9.51 a day) |
+| hit rate | **57.89%** ± 6.54% (33W / 24L / 0 void) |
+| vs the config's 52.00% | **+5.89%**, z +0.90 -- not significant |
+| vs Polymarket's 51.75% | +6.14%, z +0.94 |
+| P&L | +25.38, +0.51% on 5,000; max drawdown 0.78%; no halt |
+
+**Read the standard error, not the headline.** Fifty-seven bets put one
+standard error at 6.5 points, so the 95% interval runs from about 45% to 71%:
+this number is consistent with the +1.1% edge, with twice it, and with no edge
+at all. At the five-year pooled 53.07%, 33 or more wins in 57 happens about one
+time in four. What a slice this size *can* do is catch a break -- a config that
+has stopped firing, a signal that has inverted hard -- and it caught neither:
+the fire rate held (9.51 bets a day against 11 to 14 in the pooled years) and
+the side was right more often than not. No value was chosen from it, and
+`DECISIONS.md` records that.
+
+The gate votes on the same six days are the older result again at a sample too
+small to lean on: `mean_reversion` 65.00% on 20 signals, `taker_flow` 54.55% on
+55, and every gate the audit discarded still at or below break-even --
+`trend_alignment` 49.00%, `persistence` 47.99%, `momentum_thrust` 45.85%,
+`participation` 46.30%.
+
+**The settlement reading repeated its verdict, which matters more than the win
+rate does.** On these 58 signals: `close_to_close` 58.62%, `twap_window`
+55.17%, `twap60_vs_open` 53.45%, and `twap60_ends` **50.00%** -- 8.62 points
+below the baseline and below break-even, the same ordering and the same victim
+as the year-long measurement. Two spans that share no data now say the same
+thing: if Polymarket settles a window by comparing the 60-second TWAP at each
+end, this strategy has no edge. That question is still open, and it is still
+worth more than the edge.
+
 ### Conviction now predicts accuracy, which it did not before
 
 The five-gate stack had a **non-monotone** calibration: its most confident

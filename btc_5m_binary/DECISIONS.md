@@ -666,3 +666,48 @@ new bar fixed in advance), or to switch to a venue that settles
 close-to-close. If it settles on either of the other two, nothing
 changes and the measured edge stands. No value should be chosen on this
 until the venue's own outcomes say which it is.
+
+## The forward slice: the six days since the newest year -- no value chosen
+
+Run 35420263972, on 2026-09-19. Not a pre-registered test and not a decision;
+a forward read of the pinned pooled config on days nothing here had seen.
+
+Every year in this log was cut with `fetch --end`, and the newest ends at
+2026-09-13 00:00 UTC. The bars after that instant cost nothing to read: they
+are not one of the three pre-registered years still unread (ending 2020,
+2019 and 2018-09-13), and `.github/workflows/forward-slice.yml` cannot reach
+those -- it only ever asks for the most recent bars.
+
+`tools/slice_forward.py` cuts the slice so the warm-up sits entirely on the
+already-seen side of the cutoff: it asks the engine how many bars the gates
+consume before they can score (287 for this config, a day of taker-flow
+z-scores) and keeps exactly that many from before 2026-09-13, so the first
+bar graded is the first bar never read. The run's log prints that timestamp.
+
+| | forward slice, 2026-09-13 to 2026-09-19 |
+|---|---|
+| windows evaluated | 1,727 (6.00 days) |
+| tradable signals / bets | 58 / 57 (9.51 a day) |
+| hit rate | 57.89% +/- 6.54% (33W / 24L / 0 void) |
+| vs 52.00% | +5.89%, z +0.90 -- not significant |
+| vs Polymarket's 51.75% | +6.14%, z +0.94 |
+| P&L | +25.38, +0.51% on 5,000; max drawdown 0.78%; no halt |
+
+**Why no value is chosen from this.** One standard error is 6.5 points on 57
+bets, so the 95% interval spans about 45% to 71%. The number is consistent
+with the +1.1% pooled edge, with double it, and with nothing; at the pooled
+53.07%, 33 or more wins in 57 happens about one time in four. Choosing a
+value on a six-day sample is how a year of pre-registration gets thrown away.
+What the slice is for is a break -- a config that has stopped firing, a signal
+that has inverted hard -- and there is none: 9.51 bets a day against 11 to 14
+in the pooled years, and the side right more often than not.
+
+**What it did add, on the open question.** The four settlement readings scored
+on these 58 signals: close_to_close 58.62%, twap_window 55.17%,
+twap60_vs_open 53.45%, twap60_ends 50.00% -- 8.62 points below the baseline
+and below break-even. Same ordering, same victim, on a span sharing no data
+with the year that first measured it. It does not say which reading the venue
+uses; it says that the reading still matters more than the edge does, and the
+decision recorded above -- stop, re-register against that rule with the three
+unread years, or change venue -- is unchanged and still waiting on the venue's
+own outcomes.
