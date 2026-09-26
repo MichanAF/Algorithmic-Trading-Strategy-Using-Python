@@ -7,12 +7,17 @@
 # 2018-09-13), which this workflow never fetches -- it only ever asks for the
 # most recent bars.
 #
-# Read the sample size before the hit rate.  Six days is about 1,730 windows
-# and the config fires on roughly one bar in twenty, so this is a sample of
-# order 80 bets: a standard error near 5.6 points, against an edge measured at
-# 1.1.  It can catch a break -- a config that has stopped firing, a signal that
-# has inverted hard -- and it cannot confirm anything.  No value is chosen from
-# it; DECISIONS.md records that.
+# Read the sample size before the hit rate.  The config fires on roughly one
+# bar in twenty, so a day of bars is about 13 bets and a standard error of
+# 14 points; a week is 90 bets and 5 points; a month is 390 and 2.5.  The edge
+# it is being compared against is 1.1 points, so for a long while this can only
+# catch a break -- a config that has stopped firing, a signal that has inverted
+# hard -- and cannot confirm anything.  No value is chosen from it;
+# DECISIONS.md records that.
+#
+# The slice always starts at CUTOFF, so a later run re-reads the days an
+# earlier run reported as well as the new ones.  Report the whole span and say
+# which part is new.
 #
 # No inputs, on purpose.
 
@@ -50,16 +55,28 @@ jobs:
       - name: Install numpy
         run: pip install --quiet "numpy>=1.24"
 
-      # Ten days, so the slice can keep its warm-up on the already-seen side of
-      # the cutoff and still hold every bar after it.  The archives publish
-      # whole days, so this ends with yesterday's last bar.
+      # The tail has to reach back past the cutoff, not a fixed number of days:
+      # the slice keeps the gates' warm-up on the already-seen side of it, so a
+      # tail that starts after the cutoff is refused outright by the slicer --
+      # correctly, but the run then measures nothing.  So the length is derived
+      # from the cutoff each time, plus three days for the warm-up, today's
+      # partial day and slack.  The archives publish whole days, so the tail
+      # ends with yesterday's last bar.
+      - name: Size the fetch from the cutoff
+        run: |
+          days=$(( ( $(date -u +%s) - $(date -u -d "$CUTOFF" +%s) ) / 86400 + 3 ))
+          if [ "$days" -lt 4 ]; then days=4; fi
+          echo "BARS_5M=$(( days * 288 ))" >> "$GITHUB_ENV"
+          echo "BARS_1M=$(( days * 1440 ))" >> "$GITHUB_ENV"
+          echo "cutoff $CUTOFF is $(( days - 3 )) days back; fetching $days days"
+
       - name: Fetch the recent tail, 5-minute bars
         run: |
-          python -m btc5m fetch --limit 2880 -o tail.csv | tee fetch-5m.log
+          python -m btc5m fetch --limit "$BARS_5M" -o tail.csv | tee fetch-5m.log
 
       - name: Fetch the recent tail, 1-minute bars
         run: |
-          python -m btc5m fetch --interval 1m --limit 14400 -o tail-1m.csv | tee fetch-1m.log
+          python -m btc5m fetch --interval 1m --limit "$BARS_1M" -o tail-1m.csv | tee fetch-1m.log
 
       - name: Cut the forward slice
         run: |
