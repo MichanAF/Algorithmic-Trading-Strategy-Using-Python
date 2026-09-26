@@ -711,3 +711,58 @@ uses; it says that the reading still matters more than the edge does, and the
 decision recorded above -- stop, re-register against that rule with the three
 unread years, or change venue -- is unchanged and still waiting on the venue's
 own outcomes.
+
+## The forward slice, second reading: twelve days -- still no value chosen
+
+Run 36206229649, on 2026-09-26. Same pinned config, same workflow, a longer
+span: 2026-09-13 00:00 to 2026-09-25 00:00 UTC, 3,455 graded windows. The
+archives publish whole days, so it ends with the last complete day.
+
+The slice always starts at the cutoff, so this run re-reads the six days the
+first one reported as well as the six new ones. Both are below, and the new
+days alone are the difference, exact to about one bet at the boundary.
+
+| | 12 days, to 2026-09-25 | 6 days, to 2026-09-19 | the new 6 days |
+|---|---|---|---|
+| bets | 127 (10.59/day) | 57 (9.51/day) | 70 |
+| wins / losses | 76 / 51 | 33 / 24 | 43 / 27 |
+| hit rate | 59.84% +/- 4.35% | 57.89% +/- 6.54% | 61.43% +/- 5.82% |
+| vs 52.00% | +7.84%, z +1.80 | +5.89%, z +0.90 | +9.43%, z +1.62 |
+| vs 51.75% | +8.09%, z +1.86 | +6.14%, z +0.94 | -- |
+| halt | no | no | -- |
+
+**Why no value is chosen from this either.** Neither run clears two standard
+errors, and the twelve-day 95% interval (51.3% to 68.4%) still includes
+break-even at its lower edge. Under the five-year pooled 53.07%, 76 or more
+wins in 127 happens about one time in thirteen: lucky, not evidence of a
+larger edge. Twelve days cannot move a 22,905-bet estimate, and treating a
+run of good weeks as a reason to re-tune is exactly what the pre-registration
+protocol was built to prevent. What the slice is for is a break -- a config
+that has stopped firing, a signal that has inverted -- and there is none: the
+fire rate holds at 10.59 a day against 11 to 14 in the pooled years, and the
+drawdown never came near the 15% limit.
+
+**The settlement reading has now said the same thing three times.** On the
+twelve days' 129 signals: close_to_close 59.69%, twap_window 57.36% (-2.33),
+twap60_vs_open 58.91% (-0.78), twap60_ends 51.94% (-7.75). Three spans, one
+victim, every time the same one. Under twap60_ends these twelve days land at
+51.94%, above the 51.75% Polymarket break-even by a rounding error and below
+the config's 52.00%: the whole measured edge is the difference between two
+readings of one sentence in the market's own text. The decision recorded
+earlier -- stop, re-register against that rule with the three unread years, or
+change venue -- is unchanged, and still waiting on the venue's own outcomes
+rather than on more of this.
+
+**The gates, over the twelve days.** mean_reversion 68.42% on 38 signals
+(z +2.2, its first forward crossing of two standard errors), location 58.16%
+on 98, taker_flow 55.46% on 119; and every gate the one-year audit discarded
+is now individually significant against the strategy -- persistence 48.67%
+(z -2.0), momentum_thrust 45.53% (-2.9), trend_alignment 48.12% (-3.1),
+participation 46.69% (-3.3). The audit's signs hold forward.
+
+**One workflow fault, found and fixed before this run.** The tail was a
+hardcoded ten days while the cutoff had receded to thirteen, so every fetched
+bar would have started after the cutoff and slice_forward.py would have
+refused for want of warm-up. The refusal is the guard working; the fix is that
+the tail length is now derived from CUTOFF on each run, so the workflow does
+not expire on a date.
