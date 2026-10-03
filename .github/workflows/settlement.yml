@@ -1,0 +1,94 @@
+# Does Polymarket settle the bet this repository has been measuring?
+#
+# Every backtest here settles a window on Binance 5-minute close-to-close.
+# Polymarket resolves on Chainlink's BTC/USD 60-second TWAP stream, and the
+# market text -- "the TWAP of the time range is greater than or equal to the
+# price at the beginning of that range" -- admits more than one reading.  This
+# run measures how far apart those readings are on a year of real minute bars,
+# and what the pooled signal's hit rate is under each of them.
+#
+# The year ending 2026-09-13 is already burned: it is one of the two seen years,
+# it was never a holdout for anything, and the venue only moved to the TWAP feed
+# during 2026, so it is also the year that resembles the venue as it is now.
+# No fresh year is fetched and no pre-registered run is spent.
+
+name: Which price settles the bet
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/btc5m/settlement.py'
+      - '.github/workflows/settlement.yml'
+  workflow_dispatch:
+    inputs:
+      end:
+        description: the year to measure, ending on this date (a seen year only)
+        default: "2026-09-13"
+
+jobs:
+  settlement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # A year at both intervals: 105,120 five-minute bars and 525,600 minute
+      # bars, from the public archives rather than the REST API.
+      - name: Fetch a seen year at both intervals
+        env:
+          END: ${{ inputs.end }}
+        run: |
+          end="${END:-2026-09-13}"
+          case "$end" in
+            2020-*|2019-*|2018-*)
+              echo "::error::$end is a fresh year; this measurement runs on seen years only"
+              exit 1 ;;
+          esac
+          python -m btc5m fetch --year --end "$end" -o y.csv | tail -2
+          python -m btc5m fetch --interval 1m --year --end "$end" -o y-1m.csv | tail -2
+
+      - name: Measure the settlement rules
+        run: |
+          python -m btc5m settlement \
+            --minute y-1m.csv --data y.csv \
+            --config configs/fade-flow-pooled-5m.json 2>&1 | tee settlement.log
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Keep the minute bars
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: settlement
+          path: |
+            btc_5m_binary/settlement.log
+            btc_5m_binary/y-1m.csv
+          if-no-files-found: warn
+
+      - name: Write the summary
+        if: always()
+        run: |
+          {
+            echo "## Which price settles the bet"
+            echo
+            echo "Four readings of Polymarket's settlement text, measured on a year of real"
+            echo "minute bars, with the pooled config's own bets scored under each. A minute"
+            echo "bar is not a TWAP; the proxy is the minute's typical price."
+            echo
+            echo '```'
+            cat settlement.log 2>/dev/null || echo "(no log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

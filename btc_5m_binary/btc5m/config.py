@@ -140,6 +140,45 @@ class CrossAssetParams:
 
 
 @dataclass
+class TakerFlowParams:
+    """Who is aggressing: taker buy volume as a share of all volume.
+
+    Binance's klines carry ``taker_buy_base_volume`` per bar, so this is order
+    flow imbalance from data already in hand, not a new source.  It is the
+    best-supported short-horizon signal in the microstructure literature -- but
+    that support is at seconds to a minute, and whether it persists or inverts
+    at five minutes on BTC is exactly what the development year is for.
+
+    **Every value here is a placeholder awaiting a pre-registered choice.**
+    ``mode`` is the decision that matters: ``"follow"`` bets that aggressive
+    buying continues to lift price over the next bar; ``"fade"`` bets that an
+    extreme of aggression marks a climax.  The other three set how extreme is
+    extreme, over what span, and whether thin volume counts.
+
+    ``source`` picks where the share is read from.  ``"5m"`` averages the last
+    ``window`` five-minute bars' own shares.  ``"1m"`` sums taker and total
+    volume over the last ``window`` *minutes* before the window opens, from a
+    1-minute series supplied with ``--minute``; flow's predictive power decays
+    over minutes, so the last one to three of them can carry a cleaner read
+    than the whole bar they sit in.  Without a minute series the gate warms up
+    forever rather than voting on nothing.
+    """
+    mode: str = "follow"               # "follow" | "fade"
+    source: str = "5m"                 # "5m" = the bar's own share; "1m" = the last `window` minutes
+    window: int = 1                    # bars (5m) or minutes (1m) pooled before scoring
+    z_window: int = 288                # lookback for the z-score of the ratio; 288 = one day
+    min_abs_z: float = 1.5             # how far from typical the imbalance must be
+    min_volume_ratio: float = 1.0      # ignore imbalance on volume below this x median
+    # How the vote is scored once it passes.  The score rises from 0 at
+    # min_abs_z to 1 at min_abs_z + score_span, and the betting layer only
+    # bets when the stack's conviction clears its floor -- so a wide span
+    # means only the most extreme imbalances ever become bets.  0 makes a pass
+    # a full vote: the gate says yes or no and nothing in between, which is
+    # the honest map when accuracy does not keep rising with |z|.
+    score_span: float = 2.0
+
+
+@dataclass
 class GateParams:
     data_integrity: DataIntegrityParams = field(default_factory=DataIntegrityParams)
     volatility_regime: VolatilityRegimeParams = field(default_factory=VolatilityRegimeParams)
@@ -150,6 +189,7 @@ class GateParams:
     session: SessionParams = field(default_factory=SessionParams)
     persistence: PersistenceParams = field(default_factory=PersistenceParams)
     mean_reversion: MeanReversionParams = field(default_factory=MeanReversionParams)
+    taker_flow: TakerFlowParams = field(default_factory=TakerFlowParams)
     cross_asset: CrossAssetParams = field(default_factory=CrossAssetParams)
 
 
@@ -184,7 +224,7 @@ class BettingConfig:
     horizon_bars: int = 1              # 1 bar = 5 minutes
     bar_seconds: int = 300
     latency_seconds: int = 5            # assumed decide-to-placed delay
-    max_signal_age_seconds: int = 45
+    max_signal_age_seconds: int = 30
     min_seconds_to_expiry: int = 60
     tie_policy: str = "loss"           # "loss" | "void" | "favor_up" | "favor_down"
     deadband_bps: float = 0.0          # |move| under this counts as a tie
@@ -300,6 +340,19 @@ class StrategyConfig:
             raise ValueError("prob_cap must be strictly between 0 and 1")
         if self.betting.horizon_bars < 1:
             raise ValueError("horizon_bars must be >= 1")
+        tf = self.gates.taker_flow
+        if tf.mode not in ("follow", "fade"):
+            raise ValueError(
+                f"taker_flow.mode must be 'follow' or 'fade', got {tf.mode!r}")
+        if tf.source not in ("5m", "1m"):
+            raise ValueError(
+                f"taker_flow.source must be '5m' or '1m', got {tf.source!r}")
+        if tf.window < 1:
+            raise ValueError("taker_flow.window must be >= 1")
+        if tf.z_window < 2:
+            raise ValueError("taker_flow.z_window must be >= 2")
+        if tf.score_span < 0:
+            raise ValueError("taker_flow.score_span must be >= 0 (0 = a flat vote)")
         if not 0.0 < self.risk.max_stake_pct <= 1.0:
             raise ValueError("max_stake_pct must be in (0, 1]")
         if self.risk.kelly_fraction <= 0.0:

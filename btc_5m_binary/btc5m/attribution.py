@@ -19,11 +19,12 @@ from typing import Sequence
 
 import numpy as np
 
+from . import indicators as ind
 from .backtest import BARS_PER_DAY, resolve_outcome
 from .config import StrategyConfig, config_from_dict
 from .data import BarSeries
-from .features import FeatureSet, build_features
-from .gates import FLAT, GATE_REGISTRY
+from .features import FeatureSet, build_features, minute_taker_share
+from .gates import DOWN, FLAT, GATE_REGISTRY, UP
 from .signal import SignalEngine
 
 
@@ -119,7 +120,8 @@ def _tally(label: str, calls: Sequence[tuple[int, int]], cfg: StrategyConfig,
 
 def gate_edge(series: BarSeries, cfg: StrategyConfig,
               reference: BarSeries | None = None,
-              features: FeatureSet | None = None) -> list[EdgeStats]:
+              features: FeatureSet | None = None,
+              minute: BarSeries | None = None) -> list[EdgeStats]:
     """Per-gate directional accuracy over the bet horizon.
 
     Every gate in the registry is measured, not just the ones in the stack, so
@@ -127,7 +129,8 @@ def gate_edge(series: BarSeries, cfg: StrategyConfig,
     Confirmation gates are measured against the side they would confirm, using
     the stack's own proposed direction.
     """
-    fs = features if features is not None else build_features(series, cfg, reference)
+    fs = (features if features is not None
+          else build_features(series, cfg, reference, minute=minute))
     horizon = cfg.betting.horizon_bars
     closes = series.close
     last = len(series) - horizon
@@ -221,4 +224,210 @@ def render_table(stats: Sequence[EdgeStats], title: str) -> str:
     if stats:
         lines.append(f"  break-even to beat: {stats[0].break_even:.2%}"
                      f"   sample: {stats[0].days:.0f} days")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# order flow just before the window opens
+# --------------------------------------------------------------------------- #
+#
+# The taker-flow gate reads one number: the share of volume that was aggressive
+# buying.  Whether that number, read over the last minute or three before a
+# window opens, says anything about the window's direction is a measurement,
+# and this is where it is made -- on the development year only.  Nothing here
+# chooses a parameter; it prints what each choice would have been worth so the
+# person building the strategy can pick with evidence and write the pick down
+# before the holdout is touched.
+
+
+@dataclass
+class FlowCorrelation:
+    """How the pre-open taker share lines up with the window's direction."""
+
+    minutes: int                        # 0 = the 5-minute bar's own share
+    bars: int                           # graded windows; ties are excluded
+    corr: float | None                  # Pearson, (share - 0.5) vs signed outcome
+    share_before_up: float | None       # mean share ahead of windows that closed up
+    share_before_down: float | None     # ...and ahead of those that closed down
+
+    @property
+    def label(self) -> str:
+        return "full 5m bar" if self.minutes == 0 else f"last {self.minutes} min"
+
+    @property
+    def noise_band(self) -> float:
+        """Two standard errors of a correlation at this sample size."""
+        return 2.0 / math.sqrt(self.bars) if self.bars > 1 else float("inf")
+
+    @property
+    def reading(self) -> str:
+        if self.corr is None or self.bars < 100:
+            return "too few bars"
+        if abs(self.corr) <= self.noise_band:
+            return "noise"
+        return "carries: follow" if self.corr > 0 else "reverts: fade"
+
+
+@dataclass
+class FlowCell:
+    """One window length at one |z| floor, graded both ways."""
+
+    minutes: int
+    threshold: float
+    follow: EdgeStats                   # a bet WITH the flow
+    fade: EdgeStats                     # the same signals, bet AGAINST it
+    volume_floor: float = 0.0           # bar volume over its rolling median; 0 = none
+
+    @property
+    def label(self) -> str:
+        return "full 5m bar" if self.minutes == 0 else f"last {self.minutes} min"
+
+    @property
+    def better(self) -> EdgeStats:
+        """Whichever side was right more often; they are exact complements."""
+        f, d = self.follow.accuracy, self.fade.accuracy
+        if f is None or d is None:
+            return self.follow
+        return self.fade if d > f else self.follow
+
+    @property
+    def better_mode(self) -> str:
+        return "fade" if self.better is self.fade else "follow"
+
+
+def _flow_share(series: BarSeries, minute: BarSeries | None,
+                minutes: int) -> np.ndarray:
+    """The share each window would have been scored on, per 5-minute bar."""
+    n = len(series)
+    if minutes == 0:
+        if series.taker_buy is None:
+            return np.full(n, np.nan)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(series.volume > 0,
+                            series.taker_buy / series.volume, np.nan)
+    if minute is None:
+        return np.full(n, np.nan)
+    return minute_taker_share(series.ts, minute, minutes)
+
+
+def flow_correlation(series: BarSeries, cfg: StrategyConfig,
+                     minute: BarSeries | None = None,
+                     windows: Sequence[int] = (1, 2, 3, 5, 0)
+                     ) -> list[FlowCorrelation]:
+    """Correlation of the pre-open taker share with the next window's direction.
+
+    One number per window length, read before any threshold is applied: the
+    sign says whether flow carries (positive: follow) or reverts (negative:
+    fade), and the size against ``noise_band`` says whether it says anything.
+    """
+    outcome, horizon = _horizon_outcomes(series, cfg)
+    last = max(0, len(series) - horizon)
+    out: list[FlowCorrelation] = []
+    for minutes in windows:
+        share = _flow_share(series, minute, minutes)
+        ok = np.isfinite(share) & (outcome != 0)
+        ok[last:] = False
+        n = int(ok.sum())
+        corr = None
+        if n >= 3 and np.std(share[ok]) > 0:
+            corr = float(np.corrcoef(share[ok] - 0.5,
+                                     outcome[ok].astype(float))[0, 1])
+        up = share[ok & (outcome == UP)]
+        down = share[ok & (outcome == DOWN)]
+        out.append(FlowCorrelation(
+            minutes=minutes, bars=n, corr=corr,
+            share_before_up=float(up.mean()) if len(up) else None,
+            share_before_down=float(down.mean()) if len(down) else None))
+    return out
+
+
+def flow_edge(series: BarSeries, cfg: StrategyConfig,
+              minute: BarSeries | None = None,
+              windows: Sequence[int] = (1, 2, 3, 5, 0),
+              thresholds: Sequence[float] = (1.0, 1.5, 2.0, 2.5),
+              volume_floors: Sequence[float] = (0.0,)
+              ) -> list[FlowCell]:
+    """Accuracy of betting with, and against, the pre-open flow at each |z| floor.
+
+    The share is z-scored over ``gates.taker_flow.z_window`` bars exactly as
+    the gate does it; a window fires when |z| clears the floor and the share is
+    off 0.5.  A volume floor -- the bar's volume over its rolling median, the
+    gate's own ``volume_ratio`` -- is applied only when asked for, so what the
+    flow alone is worth stays visible next to what the floor buys.  Ties are
+    void.
+    """
+    outcome, horizon = _horizon_outcomes(series, cfg)
+    last = max(0, len(series) - horizon)
+    days = max(1e-9, len(series) / BARS_PER_DAY)
+    break_even = cfg.break_even_probability()
+    z_window = cfg.gates.taker_flow.z_window
+    vol_med = ind.rolling_median(series.volume, cfg.gates.participation.volume_window)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        volume_ratio = np.where(vol_med > 0, series.volume / vol_med, np.nan)
+    cells: list[FlowCell] = []
+    for minutes in windows:
+        share = _flow_share(series, minute, minutes)
+        z = (ind.zscore(share, z_window) if np.isfinite(share).any()
+             else np.full(len(share), np.nan))
+        side = np.where(share > 0.5, UP, np.where(share < 0.5, DOWN, FLAT))
+        for threshold in thresholds:
+            base = np.isfinite(z) & (np.abs(z) >= threshold) & (side != FLAT)
+            base[last:] = False
+            for floor in volume_floors:
+                fire = base if floor <= 0 else base & (volume_ratio >= floor)
+                graded = fire & (outcome != 0)
+                wins = int((graded & (side == outcome)).sum())
+                losses = int((graded & (side == -outcome)).sum())
+                voids = int((fire & (outcome == 0)).sum())
+                signals = int(fire.sum())
+                label = ("full 5m bar" if minutes == 0 else f"last {minutes} min"
+                         ) + f" |z|>={threshold:g}"
+                if floor > 0:
+                    label += f" vol>={floor:g}x"
+                follow = EdgeStats(label=label + " follow", signals=signals,
+                                   wins=wins, losses=losses, voids=voids,
+                                   break_even=break_even, days=days)
+                fade = EdgeStats(label=label + " fade", signals=signals,
+                                 wins=losses, losses=wins, voids=voids,
+                                 break_even=break_even, days=days)
+                cells.append(FlowCell(minutes=minutes, threshold=threshold,
+                                      follow=follow, fade=fade,
+                                      volume_floor=float(floor)))
+    return cells
+
+
+def render_flow(corrs: Sequence[FlowCorrelation], cells: Sequence[FlowCell],
+                title: str) -> str:
+    """Two compact tables: the raw correlation, then the thresholded grid."""
+    lines = [title, ""]
+    lines.append(f"  {'window':<13}{'graded':>9}{'corr':>8}{'noise':>8}"
+                 f"{'before UP':>11}{'before DOWN':>13}   reading")
+    for c in corrs:
+        corr = f"{c.corr:+.4f}" if c.corr is not None else "n/a"
+        band = (f"±{c.noise_band:.4f}" if math.isfinite(c.noise_band)
+                else "n/a")
+        up = f"{c.share_before_up:.4f}" if c.share_before_up is not None else "n/a"
+        down = (f"{c.share_before_down:.4f}" if c.share_before_down is not None
+                else "n/a")
+        lines.append(f"  {c.label:<13}{c.bars:>9,}{corr:>8}{band:>8}"
+                     f"{up:>11}{down:>13}   {c.reading}")
+    lines.append("")
+    lines.append(f"  {'window':<13}{'|z|>=':>6}{'vol>=':>6}{'signals':>9}"
+                 f"{'per day':>9}{'follow':>8}{'fade':>8}   better{'vs b/e':>9}"
+                 f"{'z':>6}   verdict")
+    for cell in cells:
+        f, d, b = cell.follow, cell.fade, cell.better
+        follow = f"{f.accuracy:.2%}" if f.accuracy is not None else "n/a"
+        fade = f"{d.accuracy:.2%}" if d.accuracy is not None else "n/a"
+        edge = f"{b.edge:+.2%}" if b.edge is not None else "n/a"
+        z = f"{b.z:+.1f}" if b.z is not None else "n/a"
+        floor = f"{cell.volume_floor:.1f}x" if cell.volume_floor > 0 else "none"
+        lines.append(f"  {cell.label:<13}{cell.threshold:>6.1f}{floor:>6}"
+                     f"{f.signals:>9,}{f.per_day:>9.2f}{follow:>8}{fade:>8}   "
+                     f"{cell.better_mode:<6}{edge:>9}{z:>6}   {b.verdict}")
+    if cells:
+        c0 = cells[0].follow
+        lines.append(f"  break-even to beat: {c0.break_even:.2%}   sample: "
+                     f"{c0.days:.0f} days   ties void; vol>= is bar volume over "
+                     f"its rolling median")
     return "\n".join(lines)

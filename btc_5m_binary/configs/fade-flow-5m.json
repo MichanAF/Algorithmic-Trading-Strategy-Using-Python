@@ -1,0 +1,101 @@
+{
+  "name": "btc-5m-binary-fade-flow",
+  "symbol": "BTCUSDT",
+  "venue": "predict-fun-btc-5m",
+  "gate_stack": [
+    "data_integrity",
+    "mean_reversion",
+    "taker_flow",
+    "session"
+  ],
+  "_hypothesis": "Fade a taker-driven push. The taker-buy share of a bar's volume, z-scored against the last day, reverts over the next window on the development year at every window length and most strongly over the whole bar (correlation -0.0308 against a noise band of 0.0062). It is wired beside the fade gate that passed its own pre-registered holdout so that either gate may carry a bar and a disagreement is refused, and its vote is flat -- a pass is a full yes -- because accuracy does not keep rising with |z| past the floor, and a vote that climbed with |z| let the conviction floor keep only the extreme tail. On the development year this placed 4,632 bets at 53.53%, +1.53% over the 52.00% break-even, significant at two standard errors. That number is the hypothesis, not the evidence: every value here was chosen on that year.",
+  "_decisions": "Every value was chosen by the person building the strategy, one at a time, with the evidence and the run it came from recorded in DECISIONS.md. Decision 1: keep the fade gate and add order flow. Decision 2: taker_flow reads the bar's own share, faded (the last 1, 2 and 3 minutes before the open were measured and were weaker). Decisions 3 and 4, chosen together: a |z| floor of 2.0 and no volume floor. Decision 5: the z-score span stays one day. Decision 6: either gate may fire, a disagreement is refused (betting.mode weighted, allow_dissent false). Decision 7: the taker vote is flat (score_span 0); the conviction floor of 0.85 and every fade-gate value are the fade config's, unchanged.",
+  "_protocol": "Fixed on 2026-09-13 BEFORE the fresh holdout -- the year ending 2023-09-13 -- was fetched or examined by anything in this repository. Development year: the year ending 2024-09-13, on which every value was chosen. The years ending 2025-09-13 and 2026-09-13 are reported after it as further, lower-trust looks: the fade gate was validated on the first and tuned on neither, but the taker gate's placeholder rows were printed for both while other work ran, so they are not fresh. Pre-registered pass criterion, on the fresh holdout, at the bet level: the backtest's hit rate above the 52.00% break-even by at least +1.0%, significant at 2 standard errors, and no halt. Anything less fails. The holdout is touched once, and this file is not edited after that run; a change means a new hypothesis and history nobody has read.",
+  "_params_pinned": "Every gate parameter is written out rather than inherited, so a later change to the defaults in config.py cannot silently alter the hypothesis under test. mean_reversion and session are byte-for-byte the fade config's.",
+  "gates": {
+    "mean_reversion": {
+      "z_window": 60,
+      "min_abs_z": 1.8,
+      "exhaustion_volume_ratio": 1.5,
+      "rsi_period": 14,
+      "rsi_overbought": 72.0,
+      "rsi_oversold": 28.0,
+      "max_variance_ratio": 1.0
+    },
+    "taker_flow": {
+      "mode": "fade",
+      "source": "5m",
+      "window": 1,
+      "z_window": 288,
+      "min_abs_z": 2.0,
+      "min_volume_ratio": 0.0,
+      "score_span": 0.0
+    },
+    "session": {
+      "allowed_hours_utc": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "funding_hours_utc": [
+        0,
+        8,
+        16
+      ],
+      "funding_blackout_minutes": 5,
+      "skip_weekend": false
+    }
+  },
+  "betting": {
+    "mode": "weighted",
+    "min_conviction": 0.85,
+    "min_directional_gates": 1,
+    "payout_mode": "contract_price",
+    "contract_price": 0.5,
+    "fee_bps": 200.0,
+    "required_edge": 0.04,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "bar_seconds": 300,
+    "latency_seconds": 5,
+    "max_signal_age_seconds": 30,
+    "min_seconds_to_expiry": 60,
+    "tie_policy": "void",
+    "deadband_bps": 0.0,
+    "allow_dissent": false
+  },
+  "risk": {
+    "starting_bankroll": 5000.0,
+    "kelly_fraction": 0.2,
+    "max_stake_pct": 0.0025,
+    "min_stake": 2.0,
+    "daily_loss_limit_pct": 0.04,
+    "max_drawdown_pct": 0.15,
+    "max_consecutive_losses": 4,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 6,
+    "max_concurrent_bets": 1,
+    "halt_when_unhealthy": false
+  }
+}

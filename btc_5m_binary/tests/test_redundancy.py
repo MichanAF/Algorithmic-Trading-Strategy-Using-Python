@@ -385,3 +385,75 @@ def test_the_halt_flag_belongs_to_max_drawdown_alone():
     decision = rm.assess(bar_index=999, ts=1_699_920_000 + 40 * 86_400,
                          p_model=0.60)
     assert decision.blocked_by == ("max_drawdown",)
+
+
+# --------------------------------------------------------------------------- #
+# 3b. how two directional gates combine
+# --------------------------------------------------------------------------- #
+
+def _two_gate_verdicts():
+    """Eight graded bars.  a fires on 0-4, b on 2-7; they agree on 2 and 3,
+    disagree on 4; outcomes chosen so every cell has a known hit rate."""
+    from btc5m.redundancy import Verdicts
+    n = 8
+    a_pass = np.array([1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
+    b_pass = np.array([0, 0, 1, 1, 1, 1, 1, 1], dtype=bool)
+    a_dir = np.array([1, 1, 1, -1, 1, 0, 0, 0], dtype=np.int8)
+    b_dir = np.array([0, 0, 1, -1, -1, 1, -1, 1], dtype=np.int8)
+    outcome = np.array([1, -1, 1, -1, -1, 1, 1, 1], dtype=int)
+    return Verdicts(names=["a", "b"], passed={"a": a_pass, "b": b_pass},
+                    direction={"a": a_dir, "b": b_dir},
+                    proposed=np.zeros(n, dtype=np.int8), outcome=outcome,
+                    start=0, bars=n, break_even=0.52)
+
+
+def test_combination_cells_partition_the_bars():
+    from btc5m.redundancy import combine_pair
+    rows = {r.label: r for r in combine_pair(_two_gate_verdicts(), "a", "b")}
+    a_only = rows["a alone"]                  # bars 0, 1: right, wrong
+    b_only = rows["b alone"]                  # bars 5, 6, 7: right, wrong, right
+    agree = rows["both fire, agree"]          # bars 2, 3: both right
+    disagree = rows["both fire, disagree"]    # bar 4
+    assert (a_only.signals, a_only.wins, a_only.losses) == (2, 1, 1)
+    assert (b_only.signals, b_only.wins, b_only.losses) == (3, 2, 1)
+    assert (agree.signals, agree.wins, agree.losses) == (2, 2, 0)
+    assert disagree.signals == 1 and disagree.wins == 0 and disagree.losses == 0
+    assert rows["AND: both must agree (unanimous)"].signals == agree.signals
+    either = rows["OR: either, no dissent (weighted)"]
+    assert either.signals == a_only.signals + b_only.signals + agree.signals
+    assert either.wins == 1 + 2 + 2 and either.losses == 1 + 1 + 0
+    assert either.break_even == 0.52
+
+
+def test_combination_renders_and_names_the_wirings():
+    from btc5m.redundancy import combine_pair, render_combination
+    v = _two_gate_verdicts()
+    text = render_combination(combine_pair(v, "a", "b"), "a", "b")
+    assert "HOW a AND b COMBINE" in text
+    for needle in ("a alone", "b alone", "both fire, agree", "both fire, disagree",
+                   "AND: both must agree", "OR: either, no dissent",
+                   "no side to grade", "unanimous", "weighted"):
+        assert needle in text, needle
+
+
+def test_full_report_adds_the_section_only_for_two_directional_gates(series):
+    """The taker gate needs a taker column to ever warm up, so the fixture
+    gets a random one; without it every bar is warm-up and there is nothing
+    to report on."""
+    from btc5m.data import BarSeries
+    from btc5m.redundancy import full_report
+    rng = np.random.default_rng(3)
+    with_taker = BarSeries(
+        ts=series.ts, open=series.open, high=series.high, low=series.low,
+        close=series.close, volume=series.volume,
+        taker_buy=series.volume * rng.uniform(0.3, 0.7, size=len(series)))
+    two = config_from_dict({"gate_stack": ["data_integrity", "mean_reversion",
+                                           "taker_flow", "session"],
+                            "betting": {"min_directional_gates": 1}})
+    one = config_from_dict({"gate_stack": ["data_integrity", "mean_reversion",
+                                           "session"],
+                            "betting": {"min_directional_gates": 1}})
+    report = full_report(with_taker, two)
+    assert "3b. HOW mean_reversion AND taker_flow COMBINE" in report
+    assert "taker_flow alone" in report
+    assert "3b." not in full_report(with_taker, one)

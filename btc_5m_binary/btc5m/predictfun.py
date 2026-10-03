@@ -7,7 +7,7 @@ in use, not a new one.
     testnet   https://api-testnet.predict.fun    no API key, 240 req/min
     mainnet   https://api.predict.fun            x-api-key header, 240 req/min
 
-Their primary servers are in ap-northeast-1 (Tokyo).  With a 45-second entry
+Their primary servers are in ap-northeast-1 (Tokyo).  With a 30-second entry
 window that matters: run close to Tokyo and the round trip is negligible, run
 from Europe or the US and it eats a real slice of the budget.
 

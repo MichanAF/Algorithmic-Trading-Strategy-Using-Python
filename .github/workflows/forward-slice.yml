@@ -1,0 +1,210 @@
+# The days since the newest backtested year: a forward out-of-sample read.
+#
+# Every year in this repository was cut with `fetch --end`, and the newest of
+# them ends at 2026-09-13 00:00 UTC.  The bars after that instant have been
+# read by nothing here, so they test the pooled config forward, at no cost to
+# the three pre-registered years still untouched (ending 2020, 2019 and
+# 2018-09-13), which this workflow never fetches -- it only ever asks for the
+# most recent bars.
+#
+# Read the sample size before the hit rate.  The config fires on roughly one
+# bar in twenty, so a day of bars is about 13 bets and a standard error of
+# 14 points; a week is 90 bets and 5 points; a month is 390 and 2.5.  The edge
+# it is being compared against is 1.1 points, so for a long while this can only
+# catch a break -- a config that has stopped firing, a signal that has inverted
+# hard -- and cannot confirm anything.  No value is chosen from it;
+# DECISIONS.md records that.
+#
+# The slice always starts at CUTOFF, so a later run re-reads the days an
+# earlier run reported as well as the new ones.  Report the whole span and say
+# which part is new.
+#
+# No inputs, on purpose.  workflow_dispatch is declared, but this project's
+# session credential has no actions:write and the API refuses the dispatch with
+# 403 "Resource not accessible by integration"; every run so far has come from
+# a push touching this file or the slicer, which is how to run it.
+
+name: Forward slice since the last backtested year
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - '.github/workflows/forward-slice.yml'
+      - 'btc_5m_binary/tools/slice_forward.py'
+  workflow_dispatch:
+
+jobs:
+  forward-slice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    env:
+      CUTOFF: "2026-09-13"
+      CONFIG: configs/fade-flow-pooled-5m.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # The tail has to reach back past the cutoff, not a fixed number of days:
+      # the slice keeps the gates' warm-up on the already-seen side of it, so a
+      # tail that starts after the cutoff is refused outright by the slicer --
+      # correctly, but the run then measures nothing.  So the length is derived
+      # from the cutoff each time, plus three days for the warm-up, today's
+      # partial day and slack.  The archives publish whole days, so the tail
+      # ends with yesterday's last bar.
+      - name: Size the fetch from the cutoff
+        run: |
+          days=$(( ( $(date -u +%s) - $(date -u -d "$CUTOFF" +%s) ) / 86400 + 3 ))
+          if [ "$days" -lt 4 ]; then days=4; fi
+          echo "BARS_5M=$(( days * 288 ))" >> "$GITHUB_ENV"
+          echo "BARS_1M=$(( days * 1440 ))" >> "$GITHUB_ENV"
+          echo "cutoff $CUTOFF is $(( days - 3 )) days back; fetching $days days"
+
+      - name: Fetch the recent tail, 5-minute bars
+        run: |
+          python -m btc5m fetch --limit "$BARS_5M" -o tail.csv | tee fetch-5m.log
+
+      - name: Fetch the recent tail, 1-minute bars
+        run: |
+          python -m btc5m fetch --interval 1m --limit "$BARS_1M" -o tail-1m.csv | tee fetch-1m.log
+
+      - name: Cut the forward slice
+        run: |
+          python tools/slice_forward.py --data tail.csv --cutoff "$CUTOFF" \
+            --config "$CONFIG" -o new.csv | tee slice-5m.log
+          python tools/slice_forward.py --data tail-1m.csv --cutoff "$CUTOFF" \
+            -o new-1m.csv | tee slice-1m.log
+
+      - name: Backtest the slice, config unchanged
+        run: |
+          python -m btc5m backtest --data new.csv --config "$CONFIG" | tee backtest-new.log
+
+      - name: Backtest the slice on Polymarket's fee basis
+        run: |
+          python -m btc5m backtest --data new.csv --config "$CONFIG" \
+            --set betting.fee_bps=175 | tee backtest-poly.log
+
+      - name: Score every gate on the slice
+        run: |
+          python -m btc5m gates --data new.csv --config "$CONFIG" | tee gates-new.log
+
+      # The four readings of the venue's settlement text, on these days' own
+      # signals.  One of the four destroyed the edge on a full year; this says
+      # what it did to these days.
+      - name: Score the four settlement readings on the slice
+        run: |
+          python -m btc5m settlement --data new.csv --minute new-1m.csv \
+            --config "$CONFIG" | tee settlement-new.log
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import math, os, pathlib, re
+
+          def text(log):
+              return pathlib.Path(log).read_text() if os.path.exists(log) else ""
+
+          def field(log, label):
+              m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text(log), re.M)
+              return m.group(1).strip() if m else "—"
+
+          def wins_losses(log):
+              m = re.search(r"wins / losses / void\s+(\d+) / (\d+) / (\d+)", text(log))
+              return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+          BE = 0.52
+          POLY_BE = 0.5175
+          cutoff = os.environ.get("CUTOFF", "the cutoff")
+          scored = field("backtest-new.log", "bars evaluated").replace(",", "")
+          days = int(scored) / 288 if scored.isdigit() else 0
+          print(f"## Forward slice — the {days:.0f} days since {cutoff}\n")
+          print(f"The slice always starts at {cutoff}, so a run after the first "
+                f"re-reads the days an earlier run reported as well as the new "
+                f"ones. Compare against the last recorded reading rather than "
+                f"treating the whole span as fresh.\n")
+          for label, log in (("5-minute tail", "fetch-5m.log"),
+                             ("1-minute tail", "fetch-1m.log")):
+              lines = text(log).strip().splitlines()
+              print(f"- **{label}**: `{lines[-2] if len(lines) > 1 else 'fetch failed'}`")
+          print("\n```")
+          print(text("slice-5m.log").strip() or "the slice did not run")
+          print("```\n")
+
+          wins, losses = wins_losses("backtest-new.log")
+          if wins is None:
+              print("### No result — the backtest did not run\n")
+          else:
+              graded = wins + losses
+              if graded:
+                  p = wins / graded
+                  se = math.sqrt(p * (1 - p) / graded)
+                  print(f"### Win rate: **{p:.2%}** on {graded:,} graded bets "
+                        f"({wins:,}W / {losses:,}L)\n")
+                  print(f"| vs | break-even | edge | standard error | z |")
+                  print("|---|---|---|---|---|")
+                  for name, be in (("config (predict.fun, 200 bps)", BE),
+                                   ("Polymarket taker fee", POLY_BE)):
+                      edge = p - be
+                      print(f"| {name} | {be:.2%} | **{edge:+.2%}** | "
+                            f"{se:.2%} | {edge / se:+.2f} |")
+                  print(f"\nOne standard error is {se:.2%} on this sample, so a "
+                        f"95% interval spans about {p - 1.96 * se:.2%} to "
+                        f"{p + 1.96 * se:.2%}. The five-year pooled estimate is "
+                        f"53.07% on 22,905 bets. **This slice cannot confirm or "
+                        f"refute that**; it can only show a break.\n")
+              else:
+                  print("### The config placed no graded bet in these days\n")
+                  expected = int(scored) / 20 if scored.isdigit() else 0
+                  print(f"Not a finding on its own, but check the blockers below: "
+                        f"a fire rate near one bar in twenty expects roughly "
+                        f"{expected:.0f} bets over the {days:.0f} days scored, so "
+                        f"zero is unlikely enough to be a wiring fault rather than "
+                        f"a signal failure.\n")
+
+          print("### Backtest, the slice against the years\n")
+          rows = ["bets placed", "tradable signals", "hit rate",
+                  "edge vs break-even", "wins / losses / void", "net P&L",
+                  "max drawdown", "longest loss streak", "annualised Sharpe",
+                  "HALTED"]
+          cols = [("**slice, config as pinned**", "backtest-new.log"),
+                  ("slice, Polymarket fee", "backtest-poly.log")]
+          print("| | " + " | ".join(c for c, _ in cols) + " |")
+          print("|---|" + "---|" * len(cols))
+          for label in rows:
+              print(f"| {label} | " + " | ".join(field(log, label) for _, log in cols) + " |")
+
+          print("\n### Gate votes on the slice\n```")
+          print(text("gates-new.log").strip() or "gates did not run")
+          print("```\n")
+          print("### The four settlement readings, on this slice's signals\n```")
+          print(text("settlement-new.log").strip() or "settlement did not run")
+          print("```\n")
+          print(f"The blockers in the backtest log say why the other bars were "
+                f"refused. A halt over {days:.0f} days would be sizing rather than "
+                f"evidence: the 15% drawdown limit is sized for a year of bets.")
+          PY
+
+      - name: Keep the candles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-forward-slice
+          path: |
+            btc_5m_binary/new.csv
+            btc_5m_binary/new-1m.csv
+          if-no-files-found: warn
+          retention-days: 30

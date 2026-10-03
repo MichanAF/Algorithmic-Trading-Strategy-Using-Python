@@ -23,7 +23,7 @@
     "horizon_bars": 1,
     "bar_seconds": 300,
     "latency_seconds": 5,
-    "max_signal_age_seconds": 45,
+    "max_signal_age_seconds": 30,
     "min_seconds_to_expiry": 60,
     "tie_policy": "void",
     "deadband_bps": 0.0

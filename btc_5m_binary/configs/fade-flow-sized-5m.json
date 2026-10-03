@@ -1,0 +1,101 @@
+{
+  "name": "btc-5m-binary-fade-flow-sized",
+  "symbol": "BTCUSDT",
+  "venue": "predict-fun-btc-5m",
+  "gate_stack": [
+    "data_integrity",
+    "mean_reversion",
+    "taker_flow",
+    "session"
+  ],
+  "_hypothesis": "The fade + flow signal, unchanged, with the risk block sized for the 4,600 bets a year it places. The second hypothesis (configs/fade-flow-5m.json) failed its fresh holdout on one clause: a 15% drawdown limit inherited from a config that bet 235 times a year tripped at 15.07% late in a year that was +62% before it, while the edge (+2.31%) and significance clauses passed by a wide margin. With a stake of s and N bets the typical drawdown of an even walk is about s x sqrt(N); at 0.25% and 4,600 bets that is 17%, so the limit sat on top of an ordinary year. This config stakes 0.10% of bankroll a bet, which puts the same 15% limit at about 2.3 times the typical drawdown -- a tripwire that means something is wrong. On the four years already seen it halted in none, with drawdowns of at most 6.4% and yearly results from -4.7% to +20.5%. Those years are all burned for this signal; nothing in them is evidence.",
+  "_decisions": "Every value was chosen by the person building the strategy, one at a time, with the evidence and the run it came from recorded in DECISIONS.md. Decision 1: keep the fade gate and add order flow. Decision 2: taker_flow reads the bar's own share, faded (the last 1, 2 and 3 minutes before the open were measured and were weaker). Decisions 3 and 4, chosen together: a |z| floor of 2.0 and no volume floor. Decision 5: the z-score span stays one day. Decision 6: either gate may fire, a disagreement is refused (betting.mode weighted, allow_dissent false). Decision 7: the taker vote is flat (score_span 0); the conviction floor of 0.85 and every fade-gate value are the fade config's, unchanged. Decision 8: risk sizing, a stake of 0.10% of bankroll with the 15% drawdown limit kept (option b of a, b, c in DECISIONS.md), chosen on four sizings run over the four seen years. Every gate value, the wiring, the vote and the conviction floor are byte-for-byte the second hypothesis's.",
+  "_protocol": "Fixed on 2026-09-13 BEFORE the fresh holdout -- the year ending 2022-09-13 -- was fetched or examined by anything in this repository. The years ending 2023-09-13 (the second hypothesis's holdout), 2024-09-13 (the development year), 2025-09-13 and 2026-09-13 are all seen and are reported after it for reference only. Pre-registered pass criterion, on the fresh holdout, at the bet level: the backtest's hit rate above the 52.00% break-even by at least +1.0%, significant at 2 standard errors, and no halt. Anything less fails. The holdout is touched once, and this file is not edited after that run.",
+  "_params_pinned": "Every gate parameter is written out rather than inherited. Relative to configs/fade-flow-5m.json exactly one value differs: risk.max_stake_pct, 0.0025 to 0.001.",
+  "gates": {
+    "mean_reversion": {
+      "z_window": 60,
+      "min_abs_z": 1.8,
+      "exhaustion_volume_ratio": 1.5,
+      "rsi_period": 14,
+      "rsi_overbought": 72.0,
+      "rsi_oversold": 28.0,
+      "max_variance_ratio": 1.0
+    },
+    "taker_flow": {
+      "mode": "fade",
+      "source": "5m",
+      "window": 1,
+      "z_window": 288,
+      "min_abs_z": 2.0,
+      "min_volume_ratio": 0.0,
+      "score_span": 0.0
+    },
+    "session": {
+      "allowed_hours_utc": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "funding_hours_utc": [
+        0,
+        8,
+        16
+      ],
+      "funding_blackout_minutes": 5,
+      "skip_weekend": false
+    }
+  },
+  "betting": {
+    "mode": "weighted",
+    "min_conviction": 0.85,
+    "min_directional_gates": 1,
+    "payout_mode": "contract_price",
+    "contract_price": 0.5,
+    "fee_bps": 200.0,
+    "required_edge": 0.04,
+    "prob_cap": 0.64,
+    "horizon_bars": 1,
+    "bar_seconds": 300,
+    "latency_seconds": 5,
+    "max_signal_age_seconds": 30,
+    "min_seconds_to_expiry": 60,
+    "tie_policy": "void",
+    "deadband_bps": 0.0,
+    "allow_dissent": false
+  },
+  "risk": {
+    "starting_bankroll": 5000.0,
+    "kelly_fraction": 0.2,
+    "max_stake_pct": 0.001,
+    "min_stake": 2.0,
+    "daily_loss_limit_pct": 0.04,
+    "max_drawdown_pct": 0.15,
+    "max_consecutive_losses": 4,
+    "cooldown_bars": 6,
+    "max_bets_per_hour": 6,
+    "max_concurrent_bets": 1,
+    "halt_when_unhealthy": false
+  }
+}
