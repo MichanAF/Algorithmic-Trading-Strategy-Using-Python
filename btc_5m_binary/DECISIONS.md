@@ -766,3 +766,57 @@ bar would have started after the cutoff and slice_forward.py would have
 refused for want of warm-up. The refusal is the guard working; the fix is that
 the tail length is now derived from CUTOFF on each run, so the workflow does
 not expire on a date.
+
+## The forward slice, third reading: the hot streak decayed -- still no value chosen
+
+Run 37085901187, on 2026-10-03. Twenty days, 2026-09-13 00:00 to 2026-10-03
+00:00 UTC, 5,471 graded windows, 210 bets at 11.05 a day.
+
+| | 20 days | 12 days (prior) | 6 days (first) |
+|---|---|---|---|
+| bets | 210 | 127 | 57 |
+| wins / losses | 115 / 95 | 76 / 51 | 33 / 24 |
+| hit rate | 54.76% +/- 3.43% | 59.84% +/- 4.35% | 57.89% +/- 6.54% |
+| vs 52.00% | +2.76%, z +0.80 | +7.84%, z +1.80 | +5.89%, z +0.90 |
+| halt | no | no | no |
+
+The increments, each run's own new days by difference:
+
+| days added | bets | wins / losses | hit rate |
+|---|---|---|---|
+| 2026-09-13 -> 09-19 | 57 | 33 / 24 | 57.89% |
+| 2026-09-19 -> 09-25 | 70 | 43 / 27 | 61.43% |
+| 2026-09-25 -> 10-03 | 83 | 39 / 44 | 46.99% |
+
+**This is the entry the protocol was built for.** A week ago this log recorded
+59.84% on 127 bets and said in as many words that it was luck rather than a
+larger edge, worth about one time in thirteen under the pooled estimate, and
+that no value would be chosen from it. Eight days later the new bars came in
+at 46.99% -- below break-even -- and the pooled twenty days sit at 54.76%,
+which against the five-year 53.07% is a z of +0.42. Exactly the regression the
+caveat described. Had the earlier number been treated as a finding, the
+re-tuning it invited would now be fitted to a fortnight of noise.
+
+So: no value changes, again. What the slice is for is a break, and there is
+none. The fire rate holds at 11.05 a day against the 11 to 14 of the pooled
+years, the drawdown limit was never approached in any run, and the gate signs
+hold forward with the larger sample sharpening them: mean_reversion 67.27% on
+55 signals (z +2.4), location 56.05% on 157, taker_flow 52.97% on 202, and
+every discarded gate significantly negative -- momentum_thrust z -2.5,
+persistence -3.3, trend_alignment -4.6, participation -4.6.
+
+**The settlement reading, fourth span.** On the 214 signals: close_to_close
+55.14%, twap60_vs_open 54.67% (-0.47), twap_window 54.21% (-0.93), twap60_ends
+49.07% (-6.07). twap60_ends has now come in below break-even on every span
+measured and below a coin flip on three of the four. It remains the largest
+single unknown in the strategy, worth six points where the edge is one, and it
+is settled by the venue's own outcomes rather than by any further backtesting.
+
+**Two bugs found by this run, both recorded in the commit.** The first attempt
+(37085425738) reported "2.0 days, 18 bets, 50.00%" and passed every step: the
+archive planner asked for September only as a monthly file, which Binance had
+not published on 3 October, and asked for no September dailies as a fallback,
+so the series had a three-week hole and the backtest scored across it. The
+planner now covers the closed month by day, and the slicer refuses a slice
+whose bars cover less than 99% of the span it claims. No number from that run
+is recorded anywhere.

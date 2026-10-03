@@ -893,7 +893,7 @@ this signal ends here. What is left is not a backtest question: bankroll,
 venue and gas decide whether +2% of stake is money, and only a live quote
 says whether the market is near 50/50 when these gates fire.
 
-### The days since, forward: 127 bets at 59.84%, and what that can say
+### The days since, forward: 210 bets at 54.76%, and what that can say
 
 Every table above runs on a year cut with `fetch --end`, and the newest of them
 ends at 2026-09-13 00:00 UTC. The days after that instant had been read by
@@ -911,61 +911,76 @@ read. It prints that timestamp rather than leaving it to be assumed, and
 refuses a tail with too little history instead of quietly starting the warm-up
 after the cutoff.
 
-Two runs so far. The slice always starts at the cutoff, so the second re-reads
-the first six days as well as the new ones; the third column is the new days
-alone, taken as the difference, which is exact to about one bet at the boundary.
+Three runs so far. The slice always starts at the cutoff, so each run re-reads
+the days the previous one reported as well as the new ones.
 
-| | **12 days, to 2026-09-25** | 6 days, to 2026-09-19 | the new 6 days alone |
+| | **20 days, to 2026-10-03** | 12 days, to 2026-09-25 | 6 days, to 2026-09-19 |
 |---|---|---|---|
-| run | [36206229649](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/36206229649) | [35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972) | by difference |
-| windows evaluated | 3,455 | 1,727 | 1,728 |
-| tradable signals / bets | 129 / **127** (10.59 a day) | 58 / 57 (9.51 a day) | — / 70 |
-| hit rate | **59.84%** ± 4.35% | 57.89% ± 6.54% | 61.43% ± 5.82% |
-| wins / losses / void | 76 / 51 / 0 | 33 / 24 / 0 | 43 / 27 / 0 |
-| vs the config's 52.00% | **+7.84%**, z +1.80 | +5.89%, z +0.90 | +9.43%, z +1.62 |
-| vs Polymarket's 51.75% | +8.09%, z +1.86 | +6.14%, z +0.94 | — |
-| P&L, Polymarket fee | +90.45, +1.81% on 5,000 | +25.79, +0.52% | — |
-| max drawdown / halt | 0.99% / no | 0.78% / no | — |
+| run | [37085901187](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/37085901187) | [36206229649](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/36206229649) | [35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972) |
+| windows evaluated | 5,471 | 3,455 | 1,727 |
+| tradable signals / bets | 214 / **210** (11.05 a day) | 129 / 127 (10.59 a day) | 58 / 57 (9.51 a day) |
+| hit rate | **54.76%** ± 3.43% | 59.84% ± 4.35% | 57.89% ± 6.54% |
+| wins / losses / void | 115 / 95 / 0 | 76 / 51 / 0 | 33 / 24 / 0 |
+| vs the config's 52.00% | **+2.76%**, z +0.80 | +7.84%, z +1.80 | +5.89%, z +0.90 |
+| vs Polymarket's 51.75% | +3.01%, z +0.88 | +8.09%, z +1.86 | +6.14%, z +0.94 |
+| P&L, Polymarket fee | +52.26, +1.05% on 5,000 | +90.45, +1.81% | +25.79, +0.52% |
+| max drawdown / halt | 0.99% / no | 0.99% / no | 0.78% / no |
 
-Neither run is significant at two standard errors, and neither was expected to
-be: the 95% interval on the twelve days runs from 51.3% to 68.4%, which still
-includes break-even at its bottom edge.
+**Read the increments, not the headline, and watch what happened to it.** Each
+run's own new days, taken as the difference against the previous reading (exact
+to about one bet at the boundary):
 
-**Read the standard error, not the headline.** At the five-year pooled 53.07%,
-76 or more wins in 127 happens about one time in thirteen -- lucky, not
-extraordinary, and well short of evidence that the edge is larger than 1.1
-points. Twelve days is not a sample that can move a five-year estimate; what a
-slice this size *can* do is catch a break, a config that has stopped firing or
-a signal that has inverted hard, and it has caught neither. The fire rate held
-at 10.59 bets a day against 11 to 14 in the pooled years, the drawdown limit
-was never approached, and the side was right more often than not in both runs.
-**No value is chosen from any of it**, and `DECISIONS.md` records that in those
-terms.
+| the days added | bets | wins / losses | hit rate |
+|---|---|---|---|
+| 2026-09-13 → 09-19 | 57 | 33 / 24 | 57.89% |
+| 2026-09-19 → 09-25 | 70 | 43 / 27 | 61.43% |
+| **2026-09-25 → 10-03** | **83** | **39 / 44** | **46.99%** |
 
-The gate votes over the twelve days are the audit's own result again, now at a
-sample where the discarded gates are individually significant *against* the
-strategy: `mean_reversion` 68.42% on 38 signals (z +2.2, its first forward
-crossing of two standard errors), `location` 58.16% on 98, `taker_flow` 55.46%
-on 119 -- and `persistence` 48.67% (z −2.0), `momentum_thrust` 45.53% (−2.9),
-`trend_alignment` 48.12% (−3.1), `participation` 46.69% (−3.3), every one of
-them below break-even with the sign the one-year audit found.
+Two good stretches and then a bad one, and the pooled twenty days land at
+54.76% -- which against the five-year pooled 53.07% is a z of **+0.42**, as
+ordinary as a result can be. The 59.84% recorded a week ago was a hot streak,
+and this is what it looks like when one decays: not a refutation, just
+regression to an estimate that already existed. Nothing here clears two
+standard errors, and the 95% interval on the twenty days (48.0% to 61.5%) now
+contains break-even comfortably rather than at its edge.
+
+**This is why no value is chosen from a forward slice**, and `DECISIONS.md`
+records it in those terms. Three weeks is not a sample that can move a
+22,905-bet estimate, and a fortnight of it was good enough to look like a
+finding before the next eight days took it back. What a slice this size *can*
+do is catch a break -- a config that has stopped firing, a signal that has
+inverted hard -- and it has caught neither: the fire rate holds at 11.05 bets a
+day against 11 to 14 in the pooled years, the 15% drawdown limit was never
+approached in any run, and the worst stretch was an ordinary losing fortnight,
+not an inversion.
+
+The gate votes over the twenty days are the audit's own result again, and the
+larger sample has sharpened it: `mean_reversion` 67.27% on 55 signals (z +2.4),
+`location` 56.05% on 157, `taker_flow` 52.97% on 202 -- and every gate the
+audit discarded is now significantly negative, more so than on the shorter
+spans: `momentum_thrust` 47.68% (z −2.5), `persistence` 47.78% (−3.3),
+`trend_alignment` 47.44% (−4.6), `participation` 46.07% (−4.6). The signs the
+one-year audit found hold forward, and the two the stack keeps are the two
+still above break-even.
 
 **The settlement reading has now said the same thing three times, which matters
 more than the win rate does.** Scored on the twelve days' 129 signals, against
 the six days' 58 and the full year's 4,246:
 
-| rule | 12 days | 6 days | the year |
-|---|---|---|---|
-| `close_to_close` | 59.69% | 58.62% | 53.77% |
-| `twap_window` | 57.36% (−2.33) | 55.17% (−3.45) | 53.89% (+0.12) |
-| `twap60_vs_open` | 58.91% (−0.78) | 53.45% (−5.17) | 54.07% (+0.30) |
-| `twap60_ends` | **51.94% (−7.75)** | **50.00% (−8.62)** | **49.69% (−4.07)** |
+| rule | 20 days (214 signals) | 12 days (129) | 6 days (58) | the year (4,246) |
+|---|---|---|---|---|
+| `close_to_close` | 55.14% | 59.69% | 58.62% | 53.77% |
+| `twap_window` | 54.21% (−0.93) | 57.36% (−2.33) | 55.17% (−3.45) | 53.89% (+0.12) |
+| `twap60_vs_open` | 54.67% (−0.47) | 58.91% (−0.78) | 53.45% (−5.17) | 54.07% (+0.30) |
+| `twap60_ends` | **49.07% (−6.07)** | **51.94% (−7.75)** | **50.00% (−8.62)** | **49.69% (−4.07)** |
 
-Three spans, the same victim every time. Under `twap60_ends` the twelve days
-land at 51.94%, which is a rounding error away from Polymarket's own 51.75%
-break-even and below the config's 52.00%: the entire measured edge is the
-difference between two readings of one sentence. That question is still open,
-and it is still worth more than the edge.
+Four spans, the same victim every time, and the one that matters most is the
+steadiest finding in this repository: **`twap60_ends` has come in below
+break-even on every span measured, and below a coin flip on three of four.**
+Over the twenty days it pays 49.07% while close-to-close pays 55.14% -- six
+points, against a measured edge of one. The entire edge remains the difference
+between two readings of one sentence in the market's own text, which is settled
+by the venue's own outcomes and by nothing else here.
 
 ### Conviction now predicts accuracy, which it did not before
 
