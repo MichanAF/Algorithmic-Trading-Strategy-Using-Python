@@ -19,7 +19,10 @@
 # earlier run reported as well as the new ones.  Report the whole span and say
 # which part is new.
 #
-# No inputs, on purpose.
+# No inputs, on purpose.  workflow_dispatch is declared, but this project's
+# session credential has no actions:write and the API refuses the dispatch with
+# 403 "Resource not accessible by integration"; every run so far has come from
+# a push touching this file or the slicer, which is how to run it.
 
 name: Forward slice since the last backtested year
 
@@ -125,7 +128,14 @@ jobs:
 
           BE = 0.52
           POLY_BE = 0.5175
-          print("## Forward slice — the days since 2026-09-13, never backtested\n")
+          cutoff = os.environ.get("CUTOFF", "the cutoff")
+          scored = field("backtest-new.log", "bars evaluated").replace(",", "")
+          days = int(scored) / 288 if scored.isdigit() else 0
+          print(f"## Forward slice — the {days:.0f} days since {cutoff}\n")
+          print(f"The slice always starts at {cutoff}, so a run after the first "
+                f"re-reads the days an earlier run reported as well as the new "
+                f"ones. Compare against the last recorded reading rather than "
+                f"treating the whole span as fresh.\n")
           for label, log in (("5-minute tail", "fetch-5m.log"),
                              ("1-minute tail", "fetch-1m.log")):
               lines = text(log).strip().splitlines()
@@ -158,10 +168,12 @@ jobs:
                         f"refute that**; it can only show a break.\n")
               else:
                   print("### The config placed no graded bet in these days\n")
-                  print("Not a finding on its own: a fire rate near one bar in "
-                        "twenty expects about 80 bets in six days, and zero is "
-                        "unlikely enough to be worth checking the blockers "
-                        "below rather than reading as a signal failure.\n")
+                  expected = int(scored) / 20 if scored.isdigit() else 0
+                  print(f"Not a finding on its own, but check the blockers below: "
+                        f"a fire rate near one bar in twenty expects roughly "
+                        f"{expected:.0f} bets over the {days:.0f} days scored, so "
+                        f"zero is unlikely enough to be a wiring fault rather than "
+                        f"a signal failure.\n")
 
           print("### Backtest, the slice against the years\n")
           rows = ["bets placed", "tradable signals", "hit rate",
@@ -181,9 +193,9 @@ jobs:
           print("### The four settlement readings, on this slice's signals\n```")
           print(text("settlement-new.log").strip() or "settlement did not run")
           print("```\n")
-          print("The blockers in the backtest log say why the other bars were "
-                "refused. A halt on six days would be sizing, not evidence: the "
-                "15% drawdown limit is sized for a year.")
+          print(f"The blockers in the backtest log say why the other bars were "
+                f"refused. A halt over {days:.0f} days would be sizing rather than "
+                f"evidence: the 15% drawdown limit is sized for a year of bets.")
           PY
 
       - name: Keep the candles
