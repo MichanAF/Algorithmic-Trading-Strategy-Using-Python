@@ -520,10 +520,20 @@ def _dump_periods(bars: int, now: datetime,
 
     The current month has no monthly archive until it ends, so its elapsed days
     come from daily archives.  Yesterday is the newest complete day.
+
+    The month just ended has no monthly archive either, for a few days: Binance
+    publishes it some time after the month closes.  Asking only for its monthly
+    file leaves a month-wide hole in the series in the first days of a new
+    month -- and a hole is worse than a short series, because the bars either
+    side of it are real and the span looks contiguous.  So the previous month's
+    days are requested as well, every time.  They cost a handful of requests
+    that 404 harmlessly once the monthly archive exists, and the collector keys
+    on the bar's timestamp, so a day covered twice is stored once.
     """
     days_needed = bars * bar_seconds / 86_400
+    first_of_month = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     months: list[str] = []
-    cursor = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    cursor = first_of_month
     while len(months) * 28 < days_needed + 31:
         cursor = (cursor - timedelta(days=1)).replace(day=1)
         months.append(cursor.strftime("%Y-%m"))
@@ -531,10 +541,11 @@ def _dump_periods(bars: int, now: datetime,
             break
     months.reverse()
 
-    days = [(datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-             + timedelta(days=i)).strftime("%Y-%m-%d")
-            for i in range((now - datetime(now.year, now.month, 1,
-                                           tzinfo=timezone.utc)).days)]
+    previous_month = (first_of_month - timedelta(days=1)).replace(day=1)
+    days = [(previous_month + timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range((first_of_month - previous_month).days)]
+    days += [(first_of_month + timedelta(days=i)).strftime("%Y-%m-%d")
+             for i in range((now - first_of_month).days)]
     return months, days
 
 

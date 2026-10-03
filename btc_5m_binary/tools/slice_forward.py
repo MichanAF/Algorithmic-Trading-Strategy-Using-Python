@@ -103,8 +103,37 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cut = series[start:]
-    path = cut.write_csv(args.out)
     graded = warmup                       # the first bar the engine can score
+
+    # A hole is worse than a short series.  The bars either side of one are
+    # real, the span still reads as contiguous, and a backtest will score it
+    # and report a hit rate: the run that caught this had 287 bars from before
+    # the cutoff and 288 from three weeks later, called itself "2.0 days", and
+    # went green.  data_integrity only vetoes the one bar after each gap, so it
+    # cannot save a result like that.  So the span is checked against the bars
+    # actually held, and a slice that does not cover what it claims is refused.
+    # Measured over the whole slice, warm-up included: the hole that got
+    # through sat *between* the warm-up and the graded bars, so the graded span
+    # was contiguous on its own and only the join was broken.  A gate that
+    # z-scores a day of history warmed up on August and then scored October as
+    # though it followed.
+    span = (int(cut.ts[-1]) - int(cut.ts[0])) // cut.bar_seconds + 1
+    missing = span - len(cut)
+    coverage = len(cut) / span if span else 0.0
+    held = len(cut) - graded
+    if missing > max(1, span // 100):
+        gaps = cut.gaps()
+        worst = max((n for _, n in gaps), default=0)
+        print(f"error: the slice spans {span:,} bars "
+              f"({cut.time_at(0):%Y-%m-%d} .. {cut.time_at(-1):%Y-%m-%d}) and "
+              f"holds {len(cut):,} of them ({coverage:.1%}); {missing:,} are "
+              f"missing and the largest hole is {worst:,} bars. A backtest "
+              f"across a hole warms up on one stretch and scores another as "
+              f"though it followed, and reports a hit rate for a span it never "
+              f"read. Rerun once the archives are complete.", file=sys.stderr)
+        return 2
+
+    path = cut.write_csv(args.out)
     print(f"forward slice  {args.data} -> {path}")
     print(f"  cutoff       {args.cutoff} 00:00 UTC, already backtested up to here")
     print(f"  warm-up      {warmup:,} bars kept before the cutoff"
@@ -112,8 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  wrote        {len(cut):,} bars, "
           f"{cut.time_at(0):%Y-%m-%d %H:%M} .. {cut.time_at(-1):%Y-%m-%d %H:%M} UTC")
     print(f"  first graded {cut.time_at(graded):%Y-%m-%d %H:%M} UTC, "
-          f"{len(cut) - graded:,} bars "
-          f"({(len(cut) - graded) * cut.bar_seconds / 86_400:.2f} days) never read")
+          f"{held:,} bars "
+          f"({held * cut.bar_seconds / 86_400:.2f} days) after the cutoff")
+    print(f"  coverage     {coverage:.2%} of the {span:,} bars the whole slice "
+          f"spans{'' if not missing else f', {missing:,} missing'}")
     gaps = cut.gaps()
     if gaps:
         print(f"  {len(gaps)} gap(s), {sum(n for _, n in gaps):,} bars missing; "

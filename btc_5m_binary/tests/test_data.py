@@ -390,12 +390,19 @@ def test_an_archive_with_no_csv_says_so():
         data._dump_rows(buf.getvalue(), "BTCUSDT")
 
 
-def test_dump_periods_covers_the_request_plus_the_current_month():
+def test_dump_periods_covers_the_request_plus_the_two_newest_months():
+    """Daily archives cover the current month and the one just closed.
+
+    The current month has no monthly archive at all, and the month just closed
+    has none for a few days after it ends, so both are asked for by day.
+    """
     now = datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc)
     months, days = data._dump_periods(8_640, now)     # 30 days
-    assert "2026-02" in months
+    assert "2026-02" in months                        # still worth asking for
     assert "2026-03" not in months                    # no archive until it ends
-    assert days[0] == "2026-03-01"
+    assert days[0] == "2026-02-01"                    # the closed month, by day
+    assert "2026-02-28" in days
+    assert "2026-03-01" in days
     assert days[-1] == "2026-03-16"                   # yesterday is the newest
 
 
@@ -414,7 +421,11 @@ def test_a_past_end_date_cuts_a_window_that_ends_there():
     months, days = data._dump_periods(105_120, end)
     assert months[-1] == "2024-08"                    # nothing at or after Sep
     assert all(m < "2024-09" for m in months)
-    assert days == [f"2024-09-{d:02d}" for d in range(1, 13)]
+    # Covering the month just closed adds August days, which are earlier still;
+    # what the protocol needs is that nothing reaches the end day or past it.
+    assert all(d < "2024-09-13" for d in days), [d for d in days if d >= "2024-09-13"]
+    assert [d for d in days if d.startswith("2024-09")] == \
+        [f"2024-09-{d:02d}" for d in range(1, 13)]
     assert "2024-09-13" not in days                    # the end day is excluded
 
 
@@ -680,3 +691,35 @@ def test_only_binance_serves_minute_candles():
         data.fetch_history("coinbase", bars=10, interval="1m")
     with pytest.raises(ValueError, match="unsupported interval"):
         data.fetch_binance_dump(bars=10, interval="15m")
+
+
+def test_the_month_just_ended_is_covered_by_daily_archives():
+    """The hole that produced a green two-day slice on 2026-10-03.
+
+    Binance publishes a month's archive some days after the month closes, so in
+    the first days of a new month the previous month has no monthly file -- and
+    the planner used to ask for daily archives only for the current month, so
+    nothing covered it.  The series came back with a month-wide hole, which is
+    worse than a short one: the bars either side are real and the span reads as
+    contiguous.
+    """
+    from datetime import datetime, timezone
+    from btc5m.data import _dump_periods
+
+    now = datetime(2026, 10, 3, 1, 16, tzinfo=timezone.utc)
+    months, days = _dump_periods(6_624, now, 300)
+    assert "2026-09" in months, "the monthly archive is still worth asking for"
+    september = [d for d in days if d.startswith("2026-09")]
+    assert len(september) == 30, f"every day of the closed month, got {september}"
+    assert "2026-10-01" in days and "2026-10-02" in days
+    assert "2026-10-03" not in days, "today's archive does not exist yet"
+
+
+def test_mid_month_still_asks_for_the_elapsed_days():
+    from datetime import datetime, timezone
+    from btc5m.data import _dump_periods
+
+    months, days = _dump_periods(4_608, datetime(2026, 9, 26, tzinfo=timezone.utc), 300)
+    assert days[-1] == "2026-09-25"
+    assert "2026-08-31" in days, "the previous month is covered either way"
+    assert "2026-08" in months

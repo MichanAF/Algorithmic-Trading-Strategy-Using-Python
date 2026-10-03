@@ -5,6 +5,8 @@ engine grades is the first bar after the cutoff, with the warm-up entirely on
 the already-seen side of it.  Everything else here is the refusals.
 """
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -111,3 +113,35 @@ def test_a_csv_the_loader_refuses_is_reported_not_raised(tmp_path, capsys):
                               "--cutoff", CUTOFF, "-o", out]) == 2
     err = capsys.readouterr().err
     assert "cannot be sliced" in err and "increasing" in err
+
+
+def test_a_slice_straddling_a_hole_is_refused(tmp_path, capsys):
+    """The failure that got through: real bars either side, a month missing between.
+
+    A hole is worse than a short series.  data_integrity vetoes the one bar
+    after a gap and nothing else notices, so a backtest over 287 bars from
+    before the cutoff and 288 from three weeks later reported a hit rate and
+    called itself two days.  The slice has to refuse instead.
+    """
+    before = bars_with_flow(400, CUTOFF_TS, seed=3)
+    after = bars_with_flow(288, CUTOFF_TS + 86_400 * 18, seed=4)
+    joined = tmp_path / "holed.csv"
+    rows = [f"{int(s.ts[i])},{s.open[i]:.2f},{s.high[i]:.2f},{s.low[i]:.2f},"
+            f"{s.close[i]:.2f},{s.volume[i]:.6f},{s.taker_buy[i]:.6f}"
+            for s in (before, after) for i in range(len(s))]
+    joined.write_text("timestamp,open,high,low,close,volume,taker_buy\n"
+                      + "\n".join(rows) + "\n")
+    out = str(tmp_path / "new.csv")
+    assert slice_forward.main(["--data", str(joined), "--cutoff", CUTOFF,
+                              "--config", CONFIG, "-o", out]) == 2
+    err = capsys.readouterr().err
+    assert "missing" in err and "hole" in err
+    assert not pathlib.Path(out).exists(), "a refused slice must write no CSV"
+
+
+def test_a_contiguous_slice_reports_full_coverage(tmp_path, capsys):
+    series = bars_with_flow(2600, CUTOFF_TS + 300 * 1700)
+    out = str(tmp_path / "new.csv")
+    assert slice_forward.main(["--data", write(series, tmp_path), "--cutoff", CUTOFF,
+                              "--config", CONFIG, "-o", out]) == 0
+    assert "coverage     100.00%" in capsys.readouterr().out
