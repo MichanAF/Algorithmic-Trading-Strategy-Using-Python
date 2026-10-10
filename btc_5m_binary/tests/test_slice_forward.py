@@ -65,7 +65,7 @@ def test_a_tail_that_stops_at_the_cutoff_has_nothing_to_grade(tmp_path, capsys):
     series = bars_with_flow(400, CUTOFF_TS)
     out = str(tmp_path / "new.csv")
     assert slice_forward.main(["--data", write(series, tmp_path),
-                              "--cutoff", CUTOFF, "-o", out]) == 2
+                              "--cutoff", CUTOFF, "-o", out]) == slice_forward.NOT_YET
     assert "nothing to grade" in capsys.readouterr().err
     assert not pathlib.Path(out).exists()
 
@@ -127,8 +127,33 @@ def test_nothing_after_the_cutoff_is_refused(tmp_path, capsys):
     series = bars_with_flow(400, CUTOFF_TS - 300)
     out = str(tmp_path / "new.csv")
     assert slice_forward.main(["--data", write(series, tmp_path),
-                              "--cutoff", CUTOFF, "-o", out]) == 2
+                              "--cutoff", CUTOFF, "-o", out]) == slice_forward.NOT_YET
     assert "nothing to grade" in capsys.readouterr().err
+
+
+def test_an_empty_window_is_a_different_exit_from_a_wrong_one(tmp_path):
+    """The workflow skips an empty increment and must stop for anything else.
+
+    Weekly readings measure the days since the last one, so a run before any
+    new day has closed is an empty window, not a fault -- but a slice with a
+    hole in it is a wrong number waiting to be printed, and that is what the
+    coverage guard is for. One exit code for both would force the caller to
+    choose between failing every quiet run and scoring a holed slice.
+    """
+    assert slice_forward.NOT_YET != 2
+
+    # empty: the tail stops at the cutoff
+    empty = str(tmp_path / "a.csv")
+    assert slice_forward.main(["--data", write(bars_with_flow(400, CUTOFF_TS), tmp_path,
+                                               "empty.csv"),
+                               "--cutoff", CUTOFF, "-o", empty]) == slice_forward.NOT_YET
+
+    # wrong: there is plenty after the cutoff but not enough before it to warm up
+    short = str(tmp_path / "b.csv")
+    assert slice_forward.main(["--data", write(bars_with_flow(400, CUTOFF_TS + 300 * 390),
+                                               tmp_path, "short.csv"),
+                               "--cutoff", CUTOFF, "--config", CONFIG,
+                               "-o", short]) == 2
 
 
 def test_a_csv_the_loader_refuses_is_reported_not_raised(tmp_path, capsys):

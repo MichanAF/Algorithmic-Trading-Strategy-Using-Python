@@ -43,6 +43,12 @@ jobs:
     defaults:
       run:
         working-directory: btc_5m_binary
+        # Every command here pipes into `tee`, and a pipeline's status is its
+        # last command's, so without pipefail a refusal from slice_forward.py
+        # exits 0 and the run carries on to score whatever is on disk.  The
+        # coverage guard exists because a green run once reported a hit rate
+        # for a span it never read; `tee` was quietly defeating it.
+        shell: bash -eo pipefail {0}
 
     env:
       CUTOFF: "2026-09-13"
@@ -56,7 +62,7 @@ jobs:
       # scored again on their own, so the week's increment is measured rather
       # than derived by subtracting the previous reading's bets.  Move this
       # forward whenever a reading is recorded in DECISIONS.md.
-      SINCE: "2026-10-02"
+      SINCE: "2026-10-10"
       CONFIG: configs/fade-flow-pooled-5m.json
 
     steps:
@@ -111,8 +117,20 @@ jobs:
       # the bet count, not the P&L.
       - name: Cut and backtest only the days since the last reading
         run: |
+          set +e
           python tools/slice_forward.py --data tail.csv --cutoff "$CUTOFF" \
-            --from "$SINCE" --config "$CONFIG" -o newest.csv | tee slice-since.log
+            --from "$SINCE" --config "$CONFIG" -o newest.csv 2>&1 | tee slice-since.log
+          cut=${PIPESTATUS[0]}
+          set -e
+          # 3 is NOT_YET: no day has closed since the last reading, so the
+          # window is empty.  Any other non-zero means a number would be
+          # wrong, and the run must stop rather than score the span anyway.
+          if [ "$cut" = 3 ]; then
+            echo "no new days since $SINCE yet; the increment is empty" \
+              | tee slice-since.log
+            exit 0
+          fi
+          [ "$cut" = 0 ] || exit "$cut"
           python -m btc5m backtest --data newest.csv --config "$CONFIG" \
             | tee backtest-since.log
 
@@ -215,7 +233,8 @@ jobs:
           w2, l2 = wins_losses("backtest-since.log")
           print(f"\n### Measured on its own: the days since {since}\n")
           if w2 is None:
-              print("The increment did not run.\n")
+              print(text("slice-since.log").strip()
+                    or "The increment did not run.", end="\n\n")
           elif w2 + l2:
               n2 = w2 + l2
               p2 = w2 / n2

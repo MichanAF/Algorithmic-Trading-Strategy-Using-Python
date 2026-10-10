@@ -60,6 +60,11 @@ def warmup_bars(series: BarSeries, cfg: StrategyConfig) -> int:
     return max(SignalEngine(cfg).warmup_bars(fs), 1)
 
 
+# An empty window is not a fault, and a caller needs to tell the two apart:
+# every other non-zero exit from this tool means a number would be wrong.
+NOT_YET = 3
+
+
 def first_ungraded(ts: np.ndarray, cutoff: int) -> int:
     """Index of the first bar a backtest cut at ``cutoff`` could not grade.
 
@@ -127,13 +132,17 @@ def main(argv: list[str] | None = None) -> int:
 
     new = first_ungraded(series.ts, graded_from)
     # The first graded bar is settled by the bar after it, so a tail that
-    # reaches the boundary and stops holds nothing that can be scored.
+    # reaches the boundary and stops holds nothing that can be scored.  This
+    # exits NOT_YET rather than 2: a caller measuring the days since the last
+    # reading hits it every time it runs before a new day has closed, which is
+    # an empty window and not a fault.  Every other refusal here means a
+    # result would be wrong, and those keep exit 2.
     if new >= len(series) - 1:
         where = args.start_at or args.cutoff
         print(f"error: {args.data} holds nothing to grade after {where} "
               f"(it ends {series.time_at(-1):%Y-%m-%d %H:%M} UTC), so there is "
               f"no forward slice to cut yet", file=sys.stderr)
-        return 2
+        return NOT_YET
 
     warmup = warmup_bars(series, load_config(args.config)) if args.config else 0
     start = new - warmup
