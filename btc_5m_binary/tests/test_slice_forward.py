@@ -47,7 +47,7 @@ def test_the_cutoff_is_the_same_instant_fetch_end_uses():
         slice_forward.parse_cutoff("13-09-2026")
 
 
-def test_a_plain_cut_keeps_only_bars_after_the_cutoff(tmp_path):
+def test_a_plain_cut_starts_at_the_cutoff_bar(tmp_path):
     """No config, no warm-up: what the minute series for `settlement` wants."""
     series = bars_with_flow(600, CUTOFF_TS + 300 * 200)
     out = str(tmp_path / "new.csv")
@@ -55,20 +55,49 @@ def test_a_plain_cut_keeps_only_bars_after_the_cutoff(tmp_path):
                               "--cutoff", CUTOFF, "-o", out]) == 0
     from btc5m.data import load_csv
     cut = load_csv(out)
-    assert len(cut) == 200
-    assert int(cut.ts[0]) == CUTOFF_TS + 300
+    assert len(cut) == 201                # the cutoff bar plus the 200 after it
+    assert int(cut.ts[0]) == CUTOFF_TS
     assert cut.taker_buy is not None      # the flow gate's only input survives
 
 
-def test_a_bar_closing_exactly_at_the_cutoff_counts_as_seen(tmp_path):
-    """`fetch --end` keeps the bar closing at the cutoff, so the slice must not."""
+def test_a_tail_that_stops_at_the_cutoff_has_nothing_to_grade(tmp_path, capsys):
+    """The cutoff bar is the first ungraded one, but settling it needs the next."""
     series = bars_with_flow(400, CUTOFF_TS)
     out = str(tmp_path / "new.csv")
     assert slice_forward.main(["--data", write(series, tmp_path),
                               "--cutoff", CUTOFF, "-o", out]) == 2
+    assert "nothing to grade" in capsys.readouterr().err
+    assert not pathlib.Path(out).exists()
 
 
-def test_the_first_graded_bar_is_the_first_bar_after_the_cutoff(tmp_path):
+def test_the_slice_grades_the_one_bar_a_year_cut_here_could_not(tmp_path):
+    """No bar falls between what the year graded and what the slice grades.
+
+    A year cut with `fetch --end CUTOFF` ends on the bar closing at the cutoff
+    and grades up to the one before it.  So the slice must grade that last bar
+    of the year's series, not the one after: otherwise exactly one bar per
+    boundary is scored by nothing, and the weekly increments stop summing to
+    the span.
+    """
+    from btc5m.data import load_csv
+
+    series = bars_with_flow(2600, CUTOFF_TS + 300 * 1700)
+    year = series[: int(np.nonzero(series.ts <= CUTOFF_TS)[0][-1]) + 1]
+    assert int(year.ts[-1]) == CUTOFF_TS, "the year cut holds the cutoff bar"
+
+    out = str(tmp_path / "new.csv")
+    assert slice_forward.main(["--data", write(series, tmp_path), "--cutoff", CUTOFF,
+                              "--config", CONFIG, "-o", out]) == 0
+    cut = load_csv(out)
+    cfg = load_config(CONFIG)
+    warmup = max(SignalEngine(cfg).warmup_bars(build_features(cut, cfg)), 1)
+
+    # the year's last gradeable anchor, and the slice's first, are adjacent
+    assert int(year.ts[-2]) + 300 == int(cut.ts[warmup])
+    assert int(cut.ts[warmup]) == int(year.ts[-1]) == CUTOFF_TS
+
+
+def test_the_first_graded_bar_is_the_first_bar_nobody_graded(tmp_path):
     """The whole point: warm-up on the seen side, every graded bar on the new side."""
     series = bars_with_flow(2600, CUTOFF_TS + 300 * 1700)
     out = str(tmp_path / "new.csv")
@@ -80,8 +109,8 @@ def test_the_first_graded_bar_is_the_first_bar_after_the_cutoff(tmp_path):
     cfg = load_config(CONFIG)
     warmup = max(SignalEngine(cfg).warmup_bars(build_features(cut, cfg)), 1)
     assert warmup > 1, "a config whose gates need no history would make this vacuous"
-    assert int(cut.ts[warmup]) == CUTOFF_TS + 300
-    assert int(cut.ts[warmup - 1]) <= CUTOFF_TS
+    assert int(cut.ts[warmup]) == CUTOFF_TS
+    assert int(cut.ts[warmup - 1]) == CUTOFF_TS - 300
 
 
 def test_too_little_history_before_the_cutoff_is_refused(tmp_path, capsys):
@@ -99,7 +128,7 @@ def test_nothing_after_the_cutoff_is_refused(tmp_path, capsys):
     out = str(tmp_path / "new.csv")
     assert slice_forward.main(["--data", write(series, tmp_path),
                               "--cutoff", CUTOFF, "-o", out]) == 2
-    assert "nothing after" in capsys.readouterr().err
+    assert "nothing to grade" in capsys.readouterr().err
 
 
 def test_a_csv_the_loader_refuses_is_reported_not_raised(tmp_path, capsys):
@@ -161,8 +190,8 @@ def test_from_grades_a_later_window_of_the_same_span(tmp_path, capsys):
     cut = load_csv(out)
     cfg = load_config(CONFIG)
     warmup = max(SignalEngine(cfg).warmup_bars(build_features(cut, cfg)), 1)
-    assert int(cut.ts[warmup]) == slice_forward.parse_cutoff(later) + 300
-    assert int(cut.ts[warmup - 1]) <= slice_forward.parse_cutoff(later)
+    assert int(cut.ts[warmup]) == slice_forward.parse_cutoff(later)
+    assert int(cut.ts[warmup - 1]) == slice_forward.parse_cutoff(later) - 300
     printed = capsys.readouterr().out
     assert f"graded from  {later}" in printed
 

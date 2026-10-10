@@ -39,8 +39,10 @@ def parse_cutoff(text: str) -> int:
 
     The same instant ``fetch --end`` uses, so a slice cut here and a year cut
     with the same date are contiguous and never overlap: that year ends with
-    the last bar closing at or before the cutoff, and this slice holds the
-    bars closing after it.
+    the last bar closing at or before the cutoff, and grades every bar up to
+    the one before it, because settling the last needs a bar it does not have.
+    The slice therefore grades from the cutoff bar itself -- see
+    ``first_ungraded``.
     """
     try:
         parsed = datetime.strptime(text, "%Y-%m-%d")
@@ -58,9 +60,23 @@ def warmup_bars(series: BarSeries, cfg: StrategyConfig) -> int:
     return max(SignalEngine(cfg).warmup_bars(fs), 1)
 
 
-def first_after(ts: np.ndarray, cutoff: int) -> int:
-    """Index of the first bar closing strictly after ``cutoff``."""
-    later = np.nonzero(ts > cutoff)[0]
+def first_ungraded(ts: np.ndarray, cutoff: int) -> int:
+    """Index of the first bar a backtest cut at ``cutoff`` could not grade.
+
+    ``fetch --end`` keeps the bar closing exactly at the cutoff, so a year cut
+    there does hold that bar -- but a backtest anchors each bet on one bar and
+    settles it with the next, so the last bar of any series is never graded.
+    The first bar nobody has graded is therefore the one closing *at* the
+    cutoff, not the one after it.
+
+    Taking the one after leaves a single bar that no run ever scores. That is
+    invisible in a hit rate -- one bar in 7,776 on a four-week slice -- but it
+    makes the line this tool prints false, and it breaks the weekly increments
+    whenever the skipped bar happens to carry a bet: they stop adding up to
+    the span they are cut from, and the arithmetic that checks one reading
+    against the last has nothing to stand on.
+    """
+    later = np.nonzero(ts >= cutoff)[0]
     return int(later[0]) if len(later) else len(ts)
 
 
@@ -109,10 +125,12 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
 
-    new = first_after(series.ts, graded_from)
-    if new >= len(series):
+    new = first_ungraded(series.ts, graded_from)
+    # The first graded bar is settled by the bar after it, so a tail that
+    # reaches the boundary and stops holds nothing that can be scored.
+    if new >= len(series) - 1:
         where = args.start_at or args.cutoff
-        print(f"error: {args.data} holds nothing after {where} "
+        print(f"error: {args.data} holds nothing to grade after {where} "
               f"(it ends {series.time_at(-1):%Y-%m-%d %H:%M} UTC), so there is "
               f"no forward slice to cut yet", file=sys.stderr)
         return 2
@@ -163,13 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.start_at:
         print(f"  graded from  {args.start_at} 00:00 UTC "
               f"(a later window of the same forward span)")
-    print(f"  warm-up      {warmup:,} bars kept before the cutoff"
+    print(f"  warm-up      {warmup:,} bars kept before the first graded bar"
           f"{' (none asked for)' if not warmup else ''}")
     print(f"  wrote        {len(cut):,} bars, "
           f"{cut.time_at(0):%Y-%m-%d %H:%M} .. {cut.time_at(-1):%Y-%m-%d %H:%M} UTC")
     print(f"  first graded {cut.time_at(graded):%Y-%m-%d %H:%M} UTC, "
           f"{held:,} bars "
-          f"({held * cut.bar_seconds / 86_400:.2f} days) after the cutoff")
+          f"({held * cut.bar_seconds / 86_400:.2f} days) from there to the end")
     print(f"  coverage     {coverage:.2%} of the {span:,} bars the whole slice "
           f"spans{'' if not missing else f', {missing:,} missing'}")
     gaps = cut.gaps()
