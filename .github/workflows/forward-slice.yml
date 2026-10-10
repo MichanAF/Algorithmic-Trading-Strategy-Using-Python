@@ -46,12 +46,17 @@ jobs:
 
     env:
       CUTOFF: "2026-09-13"
-      # The date of the last recorded reading.  The whole span since CUTOFF is
-      # scored as usual, and the days since SINCE are scored again on their
-      # own, so the week's increment is measured rather than derived by
-      # subtracting the previous reading's bets.  Move this forward whenever a
-      # reading is recorded in DECISIONS.md.
-      SINCE: "2026-10-03"
+      # The last bar the previous reading graded, as its own slice log prints
+      # it -- NOT the date that run happened.  The archives can stop a day
+      # short of the run, and then the two differ: a reading that ran on
+      # 2026-10-03 graded only to 2026-10-02 00:00.  The slicer grades from
+      # the first bar after this date, so this value names the last bar
+      # already counted and the increment starts on the next one.  The whole
+      # span since CUTOFF is scored as usual, and the days since SINCE are
+      # scored again on their own, so the week's increment is measured rather
+      # than derived by subtracting the previous reading's bets.  Move this
+      # forward whenever a reading is recorded in DECISIONS.md.
+      SINCE: "2026-10-02"
       CONFIG: configs/fade-flow-pooled-5m.json
 
     steps:

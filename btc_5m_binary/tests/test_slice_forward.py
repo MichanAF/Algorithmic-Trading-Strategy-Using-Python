@@ -190,3 +190,33 @@ def test_from_equal_to_the_cutoff_is_the_ordinary_slice(tmp_path):
     assert slice_forward.main(["--data", data, "--cutoff", CUTOFF, "--from", CUTOFF,
                               "--config", CONFIG, "-o", dated]) == 0
     assert pathlib.Path(plain).read_text() == pathlib.Path(dated).read_text()
+
+
+def test_a_slice_scores_the_same_signals_as_a_longer_series(tmp_path):
+    """Where the slice starts must not change what the gates say on its bars.
+
+    The whole forward-slice method rests on this: a 20-day slice and a 27-day
+    slice must agree, bar for bar, on the days they share, or each reading
+    would silently rescore the last one.  Many features do drift with how much
+    history precedes them -- EMAs, OBV and the higher-timeframe series are
+    seeded rather than windowed -- but this config's gates read none of them,
+    and the test fails if that ever stops being true.
+    """
+    full = bars_with_flow(6000, CUTOFF_TS + 300 * 5000, seed=17)
+    cfg = load_config(CONFIG)
+    fs_full = build_features(full, cfg)
+    engine = SignalEngine(cfg)
+    warmup = max(engine.warmup_bars(fs_full), 1)
+
+    for tail in (2303, 5759):
+        cut = full[len(full) - tail:]
+        fs_cut = build_features(cut, cfg)
+        offset = len(full) - tail
+        assert max(engine.warmup_bars(fs_cut), 1) == warmup
+        long_side = [engine.evaluate(fs_full, i).tradable
+                     for i in range(offset + warmup, len(full) - 1)]
+        slice_side = [engine.evaluate(fs_cut, i).tradable
+                      for i in range(warmup, tail - 1)]
+        assert long_side == slice_side, (
+            f"tail {tail}: {sum(long_side)} signals in the long series, "
+            f"{sum(slice_side)} in the slice")
