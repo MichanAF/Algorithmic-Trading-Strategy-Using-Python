@@ -1,0 +1,15 @@
+# Hourly is right: Polymarket posts a window's resolution well after the window
+# ends, so settling every five minutes would mostly ask about windows the venue
+# has not resolved yet.
+
+[Unit]
+Description=btc5m: settle and report, hourly
+
+[Timer]
+OnCalendar=hourly
+# Not on the hour: every other cron on the box is, and the venue does not care.
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

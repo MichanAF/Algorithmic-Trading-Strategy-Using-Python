@@ -416,3 +416,113 @@ def test_gate_scores_are_bounded_and_summaries_are_readable():
         assert 0.0 <= result.score <= 1.0, name
         assert name in result.summary()
         assert result.failed_checks == tuple(c for c in result.checks if not c.passed)
+
+
+# --------------------------------------------------------------------------- #
+# taker flow: the one gate whose input is not a function of price
+# --------------------------------------------------------------------------- #
+
+def _flow_series(n=400, spike_share=None, spike_volume=None, seed=0):
+    """Flat price, a noisy 50/50 taker share, and an optional last-bar spike."""
+    rng = np.random.default_rng(seed)
+    close = np.full(n, 100.0)
+    volume = np.full(n, 100.0)
+    share = rng.normal(0.5, 0.02, n)
+    if spike_share is not None:
+        share[-1] = spike_share
+    if spike_volume is not None:
+        volume[-1] = spike_volume
+    s = make_series(close, volume=volume)
+    return BarSeries(ts=s.ts, open=s.open, high=s.high, low=s.low, close=s.close,
+                     volume=s.volume, taker_buy=share * s.volume)
+
+
+def _flow_gate_at(series, i, **params):
+    cfg = config_from_dict({"gate_stack": ["data_integrity", "taker_flow", "session"],
+                            "betting": {"min_directional_gates": 1},
+                            "gates": {"taker_flow": params}})
+    fs = build_features(series, cfg)
+    return GATE_REGISTRY["taker_flow"].evaluate(fs, i, cfg.gates)
+
+
+def test_taker_flow_is_registered_as_directional():
+    assert GATE_REGISTRY["taker_flow"].kind == "directional"
+    assert "taker_ratio" in GATE_REGISTRY["taker_flow"].requires
+
+
+def test_taker_flow_warms_up_rather_than_voting_without_the_column():
+    """Synthetic bars and old CSVs carry no taker column; the gate must say so."""
+    series = make_series(np.full(400, 100.0))          # taker_buy is None
+    r = _flow_gate_at(series, 399)
+    assert not r.passed and r.direction == FLAT
+    assert r.checks[0].label == "warmup"
+
+
+def test_taker_flow_follow_rides_unusual_buying():
+    r = _flow_gate_at(_flow_series(spike_share=0.95), 399, mode="follow")
+    assert r.passed and r.direction == UP
+    assert all(c.passed for c in r.checks)
+    assert r.score > 0.5
+
+
+def test_taker_flow_fade_bets_against_the_same_bar():
+    """Same data, opposite mode, opposite side: mode is the whole decision."""
+    r = _flow_gate_at(_flow_series(spike_share=0.95), 399, mode="fade")
+    assert r.passed and r.direction == DOWN
+
+
+def test_taker_flow_follow_takes_the_sell_side_too():
+    r = _flow_gate_at(_flow_series(spike_share=0.05), 399, mode="follow")
+    assert r.passed and r.direction == DOWN
+
+
+def test_taker_flow_refuses_an_ordinary_imbalance():
+    """A share barely off 0.5 is noise, not a signal; the z-floor says so."""
+    r = _flow_gate_at(_flow_series(spike_share=0.51), 399, min_abs_z=1.5)
+    assert not r.passed and r.direction == FLAT
+    failed = [c.label for c in r.checks if not c.passed]
+    assert "flow_unusual" in failed
+
+
+def test_taker_flow_refuses_imbalance_on_thin_volume():
+    """Ninety-five percent of nothing is nothing."""
+    r = _flow_gate_at(_flow_series(spike_share=0.95, spike_volume=10.0), 399,
+                      min_volume_ratio=1.0)
+    assert not r.passed
+    failed = [c.label for c in r.checks if not c.passed]
+    assert "volume_backs_it" in failed
+
+
+def test_taker_flow_window_dilutes_a_single_bar_spike():
+    """A 6-bar average reports the spike bar's share as roughly (5 x 0.5 + 0.95) / 6.
+
+    Note what smoothing does *not* do: the z-score is taken over the smoothed
+    series, whose baseline noise shrinks by about sqrt(6) as well, so the bar
+    can still clear the z-floor.  ``window`` changes what is measured, not how
+    strict the gate is -- ``min_abs_z`` does that.
+    """
+    raw = _flow_gate_at(_flow_series(spike_share=0.95), 399, window=1)
+    smoothed = _flow_gate_at(_flow_series(spike_share=0.95), 399, window=6)
+    assert "share 0.95" in raw.note
+    assert "share 0.57" in smoothed.note or "share 0.58" in smoothed.note
+
+
+def test_a_zero_score_span_makes_a_pass_a_full_vote():
+    """The betting layer bets on conviction, so a vote that climbs from 0 at
+    the floor means only the most extreme imbalances ever become bets.  A
+    span of 0 says yes or no and nothing in between."""
+    # A share of 0.55 against 0.02 of noise is a z of about 2.5: past a floor
+    # of 1.5, and inside a 2.0 span, so the sloped score is strictly between.
+    series = _flow_series(spike_share=0.55)
+    sloped = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=2.0)
+    flat = _flow_gate_at(series, 399, mode="fade", min_abs_z=1.5, score_span=0.0)
+    assert sloped.passed and flat.passed
+    assert sloped.direction == flat.direction == DOWN
+    assert flat.score == 1.0
+    assert 0.0 < sloped.score < 1.0                   # the same |z|, scored by span
+    # A bar that does not clear the floor scores 0 either way.
+    quiet = _flow_series(spike_share=0.51)
+    assert not _flow_gate_at(quiet, 399, mode="fade", score_span=0.0).passed
+    assert _flow_gate_at(quiet, 399, mode="fade", score_span=0.0).score == 0.0
+    with pytest.raises(ValueError, match="score_span"):
+        config_from_dict({"gates": {"taker_flow": {"score_span": -1.0}}})

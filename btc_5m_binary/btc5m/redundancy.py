@@ -30,7 +30,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .attribution import _horizon_outcomes
+from .attribution import EdgeStats, _horizon_outcomes
 from .backtest import BARS_PER_DAY
 from .config import StrategyConfig, config_from_dict
 from .data import BarSeries
@@ -55,6 +55,8 @@ class Verdicts:
     outcome: np.ndarray
     start: int
     bars: int
+
+    break_even: float = 0.5
 
     @property
     def days(self) -> float:
@@ -120,7 +122,7 @@ def collect_verdicts(series: BarSeries, cfg: StrategyConfig,
 
     return Verdicts(names=names, passed=passed, direction=direction,
                     proposed=proposed, outcome=outcome[start:end],
-                    start=start, bars=n)
+                    start=start, bars=n, break_even=cfg.break_even_probability())
 
 
 # --------------------------------------------------------------------------- #
@@ -333,6 +335,76 @@ def marginal_value(v: Verdicts, stack: Sequence[str] | None = None
 
 
 # --------------------------------------------------------------------------- #
+# 3b. how two directional gates combine
+# --------------------------------------------------------------------------- #
+#
+# A stack with two directional gates can be wired two ways.  In unanimous mode
+# every directional gate must pass, so a bar is only tradable when both fire
+# and agree: AND.  In weighted mode a gate that does not fire simply casts no
+# vote, so either gate alone can carry a bar, and a disagreement is refused
+# unless dissent is allowed: OR.  Which wiring to choose is a decision, and the
+# cells below are what it is decided on -- each gate alone, both agreeing,
+# both disagreeing, then the two wirings assembled from those pieces.
+
+
+def combine_pair(v: Verdicts, a: str, b: str) -> list[EdgeStats]:
+    """Signal-level accuracy of every way two directional gates can be combined.
+
+    Signals only: no conviction floor, no payout test, no risk layer, so this
+    is what the gate logic itself is worth before anything else thins it.
+    """
+    graded = v.graded()
+    days = v.days
+    break_even = v.break_even
+    da, db = v.direction[a], v.direction[b]
+    fa = v.passed[a] & (da != FLAT)
+    fb = v.passed[b] & (db != FLAT)
+    a_only = fa & ~fb
+    b_only = fb & ~fa
+    agree = fa & fb & (da == db)
+    disagree = fa & fb & (da != db)
+    either = a_only | b_only | agree
+    side_either = np.where(fa, da, db).astype(np.int8)
+
+    def stats(label: str, mask: np.ndarray, side: np.ndarray) -> EdgeStats:
+        fired = mask
+        scored = fired & graded
+        wins = int((scored & (side == v.outcome)).sum())
+        losses = int((scored & (side == -v.outcome)).sum())
+        voids = int((fired & ~graded).sum())
+        return EdgeStats(label=label, signals=int(fired.sum()), wins=wins,
+                         losses=losses, voids=voids, break_even=break_even,
+                         days=days)
+
+    none = np.zeros(v.bars, dtype=np.int8)
+    return [
+        stats(f"{a} alone", a_only, da),
+        stats(f"{b} alone", b_only, db),
+        stats("both fire, agree", agree, da),
+        stats("both fire, disagree", disagree, none),
+        stats("AND: both must agree (unanimous)", agree, da),
+        stats("OR: either, no dissent (weighted)", either, side_either),
+    ]
+
+
+def render_combination(rows: Sequence[EdgeStats], a: str, b: str) -> str:
+    lines = [f"3b. HOW {a} AND {b} COMBINE -- signal level, before conviction and risk",
+             f"   {'cells':<38}{'signals':>9}{'per day':>9}{'accuracy':>10}"
+             f"{'vs b/e':>9}{'z':>7}   verdict"]
+    for r in rows:
+        acc = f"{r.accuracy:.2%}" if r.accuracy is not None else "n/a"
+        edge = f"{r.edge:+.2%}" if r.edge is not None else "n/a"
+        z = f"{r.z:+.1f}" if r.z is not None else "n/a"
+        verdict = "no side to grade" if r.label.endswith("disagree") else r.verdict
+        lines.append(f"   {r.label:<38}{r.signals:>9,}{r.per_day:>9.2f}{acc:>10}"
+                     f"{edge:>9}{z:>7}   {verdict}")
+    lines.append("   AND is betting.mode unanimous; OR is betting.mode weighted with")
+    lines.append("   allow_dissent false. Read per day beside accuracy: a wiring that")
+    lines.append("   fires too rarely cannot prove itself on any holdout.")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # 4. leave-one-out
 # --------------------------------------------------------------------------- #
 
@@ -536,6 +608,11 @@ def full_report(series: BarSeries, cfg: StrategyConfig,
         "",
         render_marginal(marginal_value(verdicts, directional)),
         "",
+    ]
+    two = [n for n in stack if GATE_REGISTRY[n].is_directional]
+    if len(two) == 2:
+        parts += [render_combination(combine_pair(verdicts, *two), *two), ""]
+    parts += [
         render_leave_one_out(leave_one_out(series, cfg, reference)),
         "",
         render_conditions(condition_bindings(series, cfg, reference), cfg),

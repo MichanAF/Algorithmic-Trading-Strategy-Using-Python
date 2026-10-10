@@ -1,0 +1,97 @@
+# Size the risk block for a strategy that bets 4,600 times a year, on years
+# already seen.
+#
+# The fade + flow config failed its fresh holdout on one clause: a 15%
+# drawdown limit, inherited from a config that bet 235 times a year, tripped
+# at 15.07% late in a year that was +62% before it.  With a stake of s (as a
+# fraction of bankroll) and N bets, the typical peak-to-trough drawdown of an
+# even walk is about s * sqrt(N): at 0.25% and 4,600 bets that is 17%, so a
+# 15% limit halts a working strategy in an ordinary year.  A limit that means
+# "something is wrong" has to sit at two to three times that scale, or the
+# stake has to shrink.
+#
+# This workflow runs the pinned signal under a few sizings on the four years
+# every value has already been chosen or tested on -- all burned for this
+# signal, so nothing here is a test of anything.  It fetches no fresh year.
+# The choice it informs is written into a third config before the year
+# ending 2022-09-13 is fetched.
+
+name: Risk sizing, seen years
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - '.github/workflows/sizing-seen.yml'
+  workflow_dispatch:
+
+jobs:
+  sizing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      - name: Fetch the four seen years
+        run: |
+          python -m btc5m fetch --year --end 2023-09-13 -o y2023.csv | tail -2
+          python -m btc5m fetch --year --end 2024-09-13 -o y2024.csv | tail -2
+          python -m btc5m fetch --year --end 2025-09-13 -o y2025.csv | tail -2
+          python -m btc5m fetch --year --end 2026-09-13 -o y2026.csv | tail -2
+
+      # Stake as a fraction of bankroll, and the drawdown limit, as pairs.
+      # "pinned" is the config as it failed; the others move one knob or both.
+      - name: Backtest each sizing on each year
+        run: |
+          for sizing in "pinned 0.0025 0.15" "wider 0.0025 0.30" "smaller 0.0010 0.15" "both 0.0010 0.30"; do
+            set -- $sizing
+            for year in 2023 2024 2025 2026; do
+              echo "== sizing $1 (stake $2 of bankroll, drawdown limit $3) year ending $year-09-13 =="
+              python -m btc5m backtest --data y$year.csv --config configs/fade-flow-5m.json \
+                --set risk.max_stake_pct=$2 --set risk.max_drawdown_pct=$3 \
+                | grep -E "bets placed|hit rate|edge vs|net P&L|max drawdown|longest loss|HALTED"
+            done
+          done 2>&1 | tee sizing.log
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib, re
+          text = pathlib.Path("sizing.log").read_text() if os.path.exists("sizing.log") else ""
+          blocks = re.split(r"^== sizing ", text, flags=re.M)[1:]
+          rows = []
+          for b in blocks:
+              head, _, body = b.partition("\n")
+              m = re.match(r"(\w+) \(stake ([\d.]+) of bankroll, drawdown limit ([\d.]+)\) year ending (\d{4})", head)
+              if not m:
+                  continue
+              def f(label):
+                  mm = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", body, re.M)
+                  return mm.group(1).strip() if mm else "—"
+              rows.append((m.group(1), float(m.group(2)), float(m.group(3)), m.group(4),
+                           f("bets placed"), f("hit rate"), f("edge vs break-even"),
+                           f("net P&L"), f("max drawdown"), f("longest loss streak"),
+                           "yes" if "HALTED" in body else "no"))
+          print("## Risk sizing on the four seen years — nothing here is a test\n")
+          print("Typical drawdown of an even walk is about stake × √bets: 0.25% × √4,600 "
+                "≈ 17%, which is why a 15% limit halts an ordinary year. The fresh year "
+                "ending 2022-09-13 was not fetched.\n")
+          print("| sizing | stake | DD limit | year | bets | hit rate | edge | net P&L | max DD | loss streak | halted |")
+          print("|---|---|---|---|---|---|---|---|---|---|---|")
+          for r in rows:
+              print(f"| {r[0]} | {r[1]:.2%} | {r[2]:.0%} | {r[3]} | {r[4]} | {r[5]} | {r[6]} | {r[7]} | {r[8]} | {r[9]} | {r[10]} |")
+          PY

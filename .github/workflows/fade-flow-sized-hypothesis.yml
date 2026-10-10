@@ -1,0 +1,183 @@
+# Test the third pre-registered hypothesis on history nobody has examined.
+#
+# configs/fade-flow-sized-5m.json is the fade + flow signal, unchanged, with
+# one value moved: the stake per bet, 0.25% of bankroll to 0.10%, so that
+# the 15% drawdown limit sits at about 2.3 times an ordinary year's drawdown
+# instead of on top of it.  The second hypothesis failed its holdout on that
+# limit alone, with the edge and significance clauses passed by a wide
+# margin; the sizing was chosen on the four years already seen (run
+# 34755963339) and is recorded in btc_5m_binary/DECISIONS.md.
+#
+#   fresh holdout  the year ending 2022-09-13   never fetched before this run
+#   seen           the years ending 2023-09-13 (the second hypothesis's
+#                  holdout), 2024-09-13 (the development year), 2025-09-13
+#                  and 2026-09-13 -- reported after it, for reference only
+#
+# The pass criterion is inside the config, fixed before the fetch: on the
+# fresh holdout the backtest's hit rate must beat the 52.00% break-even by at
+# least +1.0%, significant at two standard errors, with no halt.  If the
+# config changes after this run has been read, the holdout is burned.
+#
+# No inputs, on purpose.
+
+name: Fade + flow, sized, hypothesis
+
+on:
+  push:
+    branches:
+      - 'backtest/**'
+      - 'claude/**'
+    paths:
+      - 'btc_5m_binary/configs/fade-flow-sized-5m.json'
+      - 'btc_5m_binary/btc5m/**'
+      - '!btc_5m_binary/btc5m/polymarket.py'
+      - '!btc_5m_binary/btc5m/predictfun.py'
+      - '!btc_5m_binary/btc5m/watch.py'
+      - '.github/workflows/fade-flow-sized-hypothesis.yml'
+  workflow_dispatch:
+
+jobs:
+  fade-flow-sized:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: btc_5m_binary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy
+        run: pip install --quiet "numpy>=1.24"
+
+      # Five contiguous, non-overlapping years.  --end is midnight UTC, and the
+      # series ends on the last bar closing at or before it.
+      - name: Fetch the fresh holdout
+        run: |
+          python -m btc5m fetch --year --end 2022-09-13 -o fresh.csv | tee fetch-fresh.log
+
+      - name: Fetch the four seen years
+        run: |
+          python -m btc5m fetch --year --end 2023-09-13 -o seen1.csv | tee fetch-seen1.log
+          python -m btc5m fetch --year --end 2024-09-13 -o dev.csv | tee fetch-dev.log
+          python -m btc5m fetch --year --end 2025-09-13 -o later1.csv | tee fetch-later1.log
+          python -m btc5m fetch --year --end 2026-09-13 -o later2.csv | tee fetch-later2.log
+
+      # The decision.  Run once.
+      - name: Backtest on the fresh holdout
+        run: |
+          python -m btc5m backtest --data fresh.csv \
+            --config configs/fade-flow-sized-5m.json | tee backtest-fresh.log
+
+      - name: Score every gate on the fresh holdout
+        run: |
+          python -m btc5m gates --data fresh.csv \
+            --config configs/fade-flow-sized-5m.json | tee gates-fresh.log
+
+      - name: Backtest on the four seen years, for reference
+        run: |
+          for y in seen1 dev later1 later2; do
+            python -m btc5m backtest --data $y.csv \
+              --config configs/fade-flow-sized-5m.json | tee backtest-$y.log
+          done
+
+      - name: Write the summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, pathlib, re
+
+          def text(log):
+              return pathlib.Path(log).read_text() if os.path.exists(log) else ""
+
+          def field(log, label):
+              m = re.search(rf"^\s*{re.escape(label)}\s+(.*)$", text(log), re.M)
+              return m.group(1).strip() if m else "—"
+
+          def gate_row(log, gate):
+              m = re.search(rf"^\s*{re.escape(gate)}\s+(.*)$", text(log), re.M)
+              return m.group(1).strip() if m else "—"
+
+          print("## Fade + flow, sized — configs/fade-flow-sized-5m.json\n")
+          print("Pre-registered pass criterion, on the **fresh holdout** (the year "
+                "ending 2022-09-13): backtest hit rate above the 52.00% break-even by "
+                "at least **+1.0%**, **significant at 2 s.e.**, and no halt.\n")
+
+          edge_line = field("backtest-fresh.log", "edge vs break-even")
+          m = re.match(r"([+-]?\d+(?:\.\d+)?)%", edge_line)
+          edge = float(m.group(1)) if m else None
+          significant = "[significant" in edge_line and "NOT" not in edge_line
+          halted = "HALTED" in text("backtest-fresh.log")
+          if edge is None:
+              verdict = "NO RESULT — the fresh-holdout backtest did not run"
+          elif edge >= 1.0 and significant and not halted:
+              verdict = "PASS"
+          else:
+              why = []
+              if edge < 1.0:
+                  why.append(f"edge {edge:+.2f}% is under +1.0%")
+              if not significant:
+                  why.append("not significant at 2 s.e.")
+              if halted:
+                  why.append("the backtest halted")
+              verdict = "FAIL — " + "; ".join(why)
+          print(f"### Verdict: **{verdict}**\n")
+
+          for label, log in (("fresh holdout", "fetch-fresh.log"),
+                             ("seen: 2nd hypothesis's holdout", "fetch-seen1.log"),
+                             ("seen: development", "fetch-dev.log"),
+                             ("seen (3)", "fetch-later1.log"),
+                             ("seen (4)", "fetch-later2.log")):
+              lines = text(log).strip().splitlines()
+              print(f"- **{label}**: `{lines[-2] if len(lines) > 1 else 'fetch failed'}`")
+
+          print("\n### Backtest, one config, five years\n")
+          rows = ["bets placed", "hit rate", "break-even needed",
+                  "edge vs break-even", "max drawdown", "longest loss streak",
+                  "annualised Sharpe", "HALTED"]
+          print("| | **fresh holdout** | seen: 2nd holdout | seen: dev | seen (3) | seen (4) |")
+          print("|---|---|---|---|---|---|")
+          for label in rows:
+              bold = "**" if label == "edge vs break-even" else ""
+              print(f"| {bold}{label}{bold} | **{field('backtest-fresh.log', label)}** "
+                    f"| {field('backtest-seen1.log', label)} "
+                    f"| {field('backtest-dev.log', label)} "
+                    f"| {field('backtest-later1.log', label)} "
+                    f"| {field('backtest-later2.log', label)} |")
+
+          print("\n### Gate votes on the fresh holdout, signal level\n")
+          print("| gate | signals | per day | accuracy | vs b/e | z | verdict |")
+          print("|---|---|---|---|---|---|---|")
+          for gate in ("taker_flow", "mean_reversion"):
+              cells = gate_row("gates-fresh.log", gate).split()
+              if len(cells) >= 5:
+                  print(f"| {gate} | {cells[0]} | {cells[1]} | {cells[2]} | "
+                        f"{cells[3]} | {cells[4]} | {' '.join(cells[5:])} |")
+              else:
+                  print(f"| {gate} | — | | | | | |")
+
+          print("\n**Read the fresh-holdout column.** Every other year is one the "
+                "signal or the sizing was chosen or tested on, so agreement there "
+                "proves nothing. The backtest subtracts no gas: at $0.30 a bet and a "
+                "0.10% stake on 5,000, gas exceeds the edge; the stake fraction sets "
+                "how far the strategy can fall, the bankroll and venue set whether "
+                "gas eats it.")
+          PY
+
+      - name: Keep the candles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-5m-five-years
+          path: |
+            btc_5m_binary/fresh.csv
+            btc_5m_binary/seen1.csv
+            btc_5m_binary/dev.csv
+            btc_5m_binary/later1.csv
+            btc_5m_binary/later2.csv
+          if-no-files-found: warn
+          retention-days: 30
