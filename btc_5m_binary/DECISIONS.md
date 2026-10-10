@@ -829,15 +829,9 @@ is recorded anywhere.
 
 ## The forward slice, fourth reading: the increment now checks out, and still no value chosen
 
-[Provisional, 2026-10-10. These figures are run 38016870975's, taken before the
-boundary fix below: the slice graded from one bar after the cutoff when the bar
-closing at the cutoff is the first one nobody had graded. It is one bar in
-7,776 and cannot move the hit rate, but it is not yet re-measured. Run
-38017574768 is re-reading the same span and this entry is replaced by it.]
-
-Run 38016870975, on 2026-10-10. Twenty-seven days, 2026-09-13 00:00 to
-2026-10-10 00:00 UTC, 7,775 graded windows, 301 bets at 11.15 a day, 100.00%
-coverage on all 8,063 bars the slice spans.
+Run 38017574768, on 2026-10-10. Twenty-seven days, 2026-09-13 00:00 to
+2026-10-10 00:00 UTC, 7,776 graded windows, 301 bets at 11.15 a day, 100.00%
+coverage on all 8,064 bars the slice spans.
 
 | | 27 days | 19 days (prior) | 12 days | 6 days |
 |---|---|---|---|---|
@@ -876,6 +870,27 @@ whole span bet for bet:
 | 2026-10-02 -> 10-10 | 91 | 43 / 46 | 48.31% |
 | sum | 301 | 158 / 141 | 52.84% |
 
+**A second fault, found by checking that sum, and it is why the agreement can
+be trusted rather than merely noted.** The slice began one bar after the
+cutoff. But `fetch --end CUTOFF` keeps the bar closing exactly at the cutoff,
+and a backtest never grades the last bar of a series because settling it needs
+the next one. So the year could not grade that bar and the slice skipped it:
+one bar per boundary scored by nothing. It cannot move a hit rate -- one bar in
+7,776 -- which is why four readings passed without it showing, but it is
+exactly what the increment arithmetic stands on: the sums close only while no
+skipped bar carries a bet. Last week's exact agreement was a 96% coin flip, not
+a proof. first_ungraded now starts the slice on the cutoff bar, and a test cuts
+a year the way `fetch --end` does and asserts the year's last gradeable anchor
+and the slice's first are adjacent bars.
+
+Every figure in this entry is from the run after that fix, and nothing moved:
+the recovered bar carried no bet, so the span is still 301 bets and 158/141/2
+and the increments still sum to it exactly. One blocked bar shifted in the
+blocker counts, and trend_alignment's vote count went from 3,638 signals to
+3,646 -- which is the start-dependence finding above arriving unprompted, since
+trend_alignment reads the drifting features and the three gates the stack uses
+do not.
+
 That identity is the useful result of this run, not any hit rate in it: the
 slice boundary costs nothing, so the weekly readings compose rather than each
 being its own incomparable experiment. It is now a test rather than an
@@ -907,8 +922,8 @@ significant and neither is a reason to change a value -- acting on it would be
 the same mistake as acting on the 59.84% -- but they are the numbers the next
 reading should be checked against. Every discarded gate remains significantly
 negative and more so with the larger sample: momentum_thrust 47.91% on 1,224
-(z -2.9), persistence 47.85% on 2,145 (-3.8), trend_alignment 48.07% on 3,638
-(-4.7), participation 46.53% on 2,151 (-5.1).
+(z -2.9), persistence 47.85% on 2,145 (-3.8), trend_alignment 47.99% on 3,646
+(-4.8), participation 46.53% on 2,151 (-5.1).
 
 **The settlement reading, fifth span.** On the 308 signals: close_to_close
 52.60%, twap60_vs_open 52.60% (+0.00), twap_window 51.30% (-1.30), twap60_ends

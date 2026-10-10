@@ -895,13 +895,6 @@ says whether the market is near 50/50 when these gates fire.
 
 ### The days since, forward: 299 bets at 52.84%, and what that can say
 
-> **Provisional.** The figures below are from run 38016870975, which graded one
-> bar too late at each boundary -- the defect described under "the increments"
-> and fixed in `first_ungraded`. One bar in 7,776 cannot move a hit rate, but
-> these numbers have not been re-read since the fix. Run 38017574768 is
-> re-measuring the same span; this section is replaced by its output.
-
-
 Every table above runs on a year cut with `fetch --end`, and the newest of them
 ends at 2026-09-13 00:00 UTC. The days after that instant had been read by
 nothing here, so `.github/workflows/forward-slice.yml` runs the pooled config
@@ -923,8 +916,8 @@ the days the previous one reported as well as the new ones.
 
 | | **27 days, to 2026-10-10** | 19 days, to 2026-10-02 | 12 days, to 2026-09-25 | 6 days, to 2026-09-19 |
 |---|---|---|---|---|
-| run | [38016870975](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/38016870975) | [37085901187](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/37085901187) | [36206229649](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/36206229649) | [35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972) |
-| windows evaluated | 7,775 | 5,471 | 3,455 | 1,727 |
+| run | [38017574768](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/38017574768) | [37085901187](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/37085901187) | [36206229649](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/36206229649) | [35420263972](https://github.com/MichanAF/Algorithmic-Trading-Strategy-Using-Python/actions/runs/35420263972) |
+| windows evaluated | 7,776 | 5,471 | 3,455 | 1,727 |
 | tradable signals / bets | 308 / **301** (11.15 a day) | 214 / 210 (11.05 a day) | 129 / 127 (10.59 a day) | 58 / 57 (9.51 a day) |
 | hit rate | **52.84%** ± 2.89% | 54.76% ± 3.43% | 59.84% ± 4.35% | 57.89% ± 6.54% |
 | wins / losses / void | 158 / 141 / 2 | 115 / 95 / 0 | 76 / 51 / 0 | 33 / 24 / 0 |
@@ -963,6 +956,29 @@ whole span bet for bet:
 | **2026-10-02 → 10-10** | **91** | **43 / 46** | **48.31%** |
 | sum | 301 | 158 / 141 | 52.84% |
 
+One more fault turned up while checking that sum, and it is the reason the
+agreement above can be trusted rather than merely noted. The slice began one
+bar *after* the cutoff, but `fetch --end` keeps the bar closing exactly at the
+cutoff and a backtest never grades the last bar of any series -- it needs the
+next one to settle against. So the year could not grade that bar and the slice
+skipped it: exactly one bar per boundary that no run ever scored. One bar in
+7,776 cannot move a hit rate, which is why four readings went by without it
+surfacing, but it is precisely what the increment arithmetic rests on. The sums
+only close while no skipped bar carries a bet, so last week's exact agreement
+was a 96% coin flip rather than a proof. `first_ungraded` now starts the slice
+on the cutoff bar itself, and the test that would have caught it cuts a year
+the way `fetch --end` does and asserts the year's last gradeable anchor and the
+slice's first are adjacent.
+
+Every figure in this section is from the run after that fix. Nothing in the
+tables moved: the recovered bar carried no bet, so the span still reads 301
+bets and 158 / 141 / 2, and the increments still sum to it exactly. What moved
+was one blocked bar in the blocker counts -- and `trend_alignment`'s vote
+count, from 3,638 signals to 3,646. That is the next paragraph's point arriving
+on its own: `trend_alignment` reads the drifting features, so its count shifts
+when the slice start moves by one bar, while the three gates the stack actually
+uses did not budge.
+
 That identity is worth more than any of the hit rates in it. It says the slice
 boundary itself costs nothing: a slice cut at 2026-10-02 scores the same
 signals as the 27-day slice does over the same days, so the weekly readings
@@ -998,8 +1014,8 @@ each reading in those terms.
 The gate votes over the 27 days are the audit's own result again, with one
 honest wrinkle. Every gate the audit discarded is significantly negative, and
 more so on the larger sample: `momentum_thrust` 47.91% on 1,224 signals
-(z −2.9), `persistence` 47.85% on 2,145 (−3.8), `trend_alignment` 48.07% on
-3,638 (−4.7), `participation` 46.53% on 2,151 (−5.1). The signs the one-year
+(z −2.9), `persistence` 47.85% on 2,145 (−3.8), `trend_alignment` 47.99% on
+3,646 (−4.8), `participation` 46.53% on 2,151 (−5.1). The signs the one-year
 audit found hold forward. But the two gates the stack *keeps* have both
 softened as the sample grew: `mean_reversion` is 60.76% on 79 signals, z +1.6,
 down from z +2.4 over the 19 days, and `taker_flow` is 51.70% on 296 -- for the
