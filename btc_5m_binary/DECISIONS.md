@@ -769,10 +769,16 @@ not expire on a date.
 
 ## The forward slice, third reading: the hot streak decayed -- still no value chosen
 
-Run 37085901187, on 2026-10-03. Twenty days, 2026-09-13 00:00 to 2026-10-03
+Run 37085901187, on 2026-10-03. Nineteen days, 2026-09-13 00:00 to 2026-10-02
 00:00 UTC, 5,471 graded windows, 210 bets at 11.05 a day.
 
-| | 20 days | 12 days (prior) | 6 days (first) |
+[Corrected 2026-10-10. This entry first said "twenty days ... to 2026-10-03",
+which was the date the run happened rather than the last bar it graded: the
+archives stopped a day short of the run, so the span ends 2026-10-02 00:00.
+The bets, the hit rate and every other number below are unaffected. The fourth
+reading records what taking the run date for the span cost.]
+
+| | 19 days | 12 days (prior) | 6 days (first) |
 |---|---|---|---|
 | bets | 210 | 127 | 57 |
 | wins / losses | 115 / 95 | 76 / 51 | 33 / 24 |
@@ -786,13 +792,13 @@ The increments, each run's own new days by difference:
 |---|---|---|---|
 | 2026-09-13 -> 09-19 | 57 | 33 / 24 | 57.89% |
 | 2026-09-19 -> 09-25 | 70 | 43 / 27 | 61.43% |
-| 2026-09-25 -> 10-03 | 83 | 39 / 44 | 46.99% |
+| 2026-09-25 -> 10-02 | 83 | 39 / 44 | 46.99% |
 
 **This is the entry the protocol was built for.** A week ago this log recorded
 59.84% on 127 bets and said in as many words that it was luck rather than a
 larger edge, worth about one time in thirteen under the pooled estimate, and
 that no value would be chosen from it. Eight days later the new bars came in
-at 46.99% -- below break-even -- and the pooled twenty days sit at 54.76%,
+at 46.99% -- below break-even -- and the pooled nineteen days sit at 54.76%,
 which against the five-year 53.07% is a z of +0.42. Exactly the regression the
 caveat described. Had the earlier number been treated as a finding, the
 re-tuning it invited would now be fitted to a fortnight of noise.
@@ -820,3 +826,94 @@ so the series had a three-week hole and the backtest scored across it. The
 planner now covers the closed month by day, and the slicer refuses a slice
 whose bars cover less than 99% of the span it claims. No number from that run
 is recorded anywhere.
+
+## The forward slice, fourth reading: the increment now checks out, and still no value chosen
+
+[Provisional, 2026-10-10. These figures are run 38016870975's, taken before the
+boundary fix below: the slice graded from one bar after the cutoff when the bar
+closing at the cutoff is the first one nobody had graded. It is one bar in
+7,776 and cannot move the hit rate, but it is not yet re-measured. Run
+38017574768 is re-reading the same span and this entry is replaced by it.]
+
+Run 38016870975, on 2026-10-10. Twenty-seven days, 2026-09-13 00:00 to
+2026-10-10 00:00 UTC, 7,775 graded windows, 301 bets at 11.15 a day, 100.00%
+coverage on all 8,063 bars the slice spans.
+
+| | 27 days | 19 days (prior) | 12 days | 6 days |
+|---|---|---|---|---|
+| bets | 301 | 210 | 127 | 57 |
+| wins / losses / void | 158 / 141 / 2 | 115 / 95 / 0 | 76 / 51 / 0 | 33 / 24 / 0 |
+| hit rate | 52.84% +/- 2.89% | 54.76% +/- 3.43% | 59.84% +/- 4.35% | 57.89% +/- 6.54% |
+| vs 52.00% | +0.84%, z +0.29 | +2.76%, z +0.80 | +7.84%, z +1.80 | +5.89%, z +0.90 |
+| vs 51.75% | +1.09%, z +0.38 | +3.01%, z +0.88 | +8.09%, z +1.86 | +6.14%, z +0.94 |
+| halt | no | no | no | no |
+
+**The increment is measured now, not subtracted, and the two agree exactly.**
+Every reading re-reads the earlier days, so the new days are what carries
+information, and until this run they were obtained by differencing against the
+previous entry. The workflow now also cuts the new days as a slice of their own
+and backtests them separately, which turns that subtraction into a check that
+can fail.
+
+It failed on its first attempt, and the fault was the window rather than the
+arithmetic: SINCE was set to the previous run's calendar date, 2026-10-03,
+while that run had graded only to 2026-10-02 00:00 because its archives stopped
+a day short. One day belonged to neither reading, so the derivation spanned
+eight days and the measurement seven. SINCE is now the previous reading's last
+graded bar as its own slice log prints it, and the comment beside it says why
+the two dates are not interchangeable. The third entry above is corrected on
+the same point.
+
+With the window right, the derived and the measured increment are identical --
+43 wins, 46 losses, 2 void, both ways -- and the four increments sum to the
+whole span bet for bet:
+
+| days added | bets | wins / losses | hit rate |
+|---|---|---|---|
+| 2026-09-13 -> 09-19 | 57 | 33 / 24 | 57.89% |
+| 2026-09-19 -> 09-25 | 70 | 43 / 27 | 61.43% |
+| 2026-09-25 -> 10-02 | 83 | 39 / 44 | 46.99% |
+| 2026-10-02 -> 10-10 | 91 | 43 / 46 | 48.31% |
+| sum | 301 | 158 / 141 | 52.84% |
+
+That identity is the useful result of this run, not any hit rate in it: the
+slice boundary costs nothing, so the weekly readings compose rather than each
+being its own incomparable experiment. It is now a test rather than an
+observation -- tests/test_slice_forward.py cuts two tail lengths from one
+series and compares every tradable verdict -- because it holds only for a
+config whose gates read features that converge inside the warm-up. It would not
+hold for one using the EMA, OBV or rank features, and a future gate that
+carries state across the cut will fail that test instead of quietly shifting a
+reading.
+
+**No value changes, for the fourth time.** The 299 graded bets fold into the
+five-year pooled 22,905 and leave it reading 53.07%, unchanged to two decimals;
+against that estimate the forward record is z -0.08. The increments read
+57.89%, 61.43%, 46.99%, 48.31% -- two good weeks then two bad -- which is what
+the first entry's caveat said would happen and the third entry's hot streak
+decaying the rest of the way. The 95% interval on the 27 days runs 47.2% to
+58.5% and contains break-even comfortably.
+
+What the slice is for is a break, and there is none: 11.15 bets a day against
+the 11 to 14 of the pooled years, worst drawdown 2.37% against a 15% halt
+never approached, longest losing streak 8, no halt in any run.
+
+**One thing to watch, stated now so it is not discovered later.** Both gates
+the stack keeps have softened as the sample grew. mean_reversion is 60.76% on
+79 signals, z +1.6, down from z +2.4 over the 19 days; taker_flow is 51.70% on
+296, for the first time a shade below the 52.00% break-even, where it read
+52.97% a week earlier. location is 53.48% on 232, z +0.4. Neither softening is
+significant and neither is a reason to change a value -- acting on it would be
+the same mistake as acting on the 59.84% -- but they are the numbers the next
+reading should be checked against. Every discarded gate remains significantly
+negative and more so with the larger sample: momentum_thrust 47.91% on 1,224
+(z -2.9), persistence 47.85% on 2,145 (-3.8), trend_alignment 48.07% on 3,638
+(-4.7), participation 46.53% on 2,151 (-5.1).
+
+**The settlement reading, fifth span.** On the 308 signals: close_to_close
+52.60%, twap60_vs_open 52.60% (+0.00), twap_window 51.30% (-1.30), twap60_ends
+47.40% (-5.19). twap60_ends has now come in below break-even on every span
+measured and below a coin flip on four of the five. It is still the largest
+single unknown in the strategy -- five points where the measured edge is one --
+and it is still settled by the venue's own outcomes rather than by any further
+backtesting here.
