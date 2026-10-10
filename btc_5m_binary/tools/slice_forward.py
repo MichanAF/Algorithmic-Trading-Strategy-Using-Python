@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", metavar="JSON",
                     help="keep this config's warm-up before the cutoff "
                          "(omit for a plain cut, which is what minute bars want)")
+    ap.add_argument("--from", dest="start_at", metavar="YYYY-MM-DD",
+                    help="grade from this date instead of the cutoff, so a run "
+                         "can measure only the days a previous reading did not "
+                         "cover; must be at or after --cutoff, and the warm-up "
+                         "is kept before it as usual")
     ap.add_argument("-o", "--out", required=True, metavar="CSV")
     args = ap.parse_args(argv)
 
@@ -87,9 +92,27 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cutoff = parse_cutoff(args.cutoff)
-    new = first_after(series.ts, cutoff)
+
+    # --from grades a later window of the same forward span.  Every reading so
+    # far has derived its own new days by subtracting the previous reading's
+    # bets, which is sound only if the prefix is bet-for-bet identical; this
+    # measures them instead, so the subtraction can be checked rather than
+    # trusted.  It can only move the start later, never before the cutoff, so
+    # it cannot reach back into a year already backtested.
+    graded_from = cutoff
+    if args.start_at:
+        graded_from = parse_cutoff(args.start_at)
+        if graded_from < cutoff:
+            print(f"error: --from {args.start_at} is before --cutoff "
+                  f"{args.cutoff}; a slice may start later than the cutoff but "
+                  f"never earlier, or it would score a year already read",
+                  file=sys.stderr)
+            return 2
+
+    new = first_after(series.ts, graded_from)
     if new >= len(series):
-        print(f"error: {args.data} holds nothing after {args.cutoff} "
+        where = args.start_at or args.cutoff
+        print(f"error: {args.data} holds nothing after {where} "
               f"(it ends {series.time_at(-1):%Y-%m-%d %H:%M} UTC), so there is "
               f"no forward slice to cut yet", file=sys.stderr)
         return 2
@@ -98,8 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     start = new - warmup
     if start < 0:
         print(f"error: the gates need {warmup:,} bars of warm-up before "
-              f"{args.cutoff} and only {new:,} are in {args.data}. Fetch "
-              f"{warmup - new:,} more bars of history.", file=sys.stderr)
+              f"{args.start_at or args.cutoff} and only {new:,} are in "
+              f"{args.data}. Fetch {warmup - new:,} more bars of history.",
+              file=sys.stderr)
         return 2
 
     cut = series[start:]
@@ -136,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     path = cut.write_csv(args.out)
     print(f"forward slice  {args.data} -> {path}")
     print(f"  cutoff       {args.cutoff} 00:00 UTC, already backtested up to here")
+    if args.start_at:
+        print(f"  graded from  {args.start_at} 00:00 UTC "
+              f"(a later window of the same forward span)")
     print(f"  warm-up      {warmup:,} bars kept before the cutoff"
           f"{' (none asked for)' if not warmup else ''}")
     print(f"  wrote        {len(cut):,} bars, "

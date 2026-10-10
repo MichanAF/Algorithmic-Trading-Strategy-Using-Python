@@ -46,6 +46,12 @@ jobs:
 
     env:
       CUTOFF: "2026-09-13"
+      # The date of the last recorded reading.  The whole span since CUTOFF is
+      # scored as usual, and the days since SINCE are scored again on their
+      # own, so the week's increment is measured rather than derived by
+      # subtracting the previous reading's bets.  Move this forward whenever a
+      # reading is recorded in DECISIONS.md.
+      SINCE: "2026-10-03"
       CONFIG: configs/fade-flow-pooled-5m.json
 
     steps:
@@ -91,6 +97,19 @@ jobs:
       - name: Backtest the slice, config unchanged
         run: |
           python -m btc5m backtest --data new.csv --config "$CONFIG" | tee backtest-new.log
+
+      # The increment on its own.  Every reading so far subtracted the previous
+      # one's bets to get its new days, which is sound only if the prefix is
+      # bet-for-bet identical; this measures them, so the subtraction can be
+      # checked instead of trusted.  The risk layer starts fresh here rather
+      # than carrying the earlier weeks' bankroll, so compare the hit rate and
+      # the bet count, not the P&L.
+      - name: Cut and backtest only the days since the last reading
+        run: |
+          python tools/slice_forward.py --data tail.csv --cutoff "$CUTOFF" \
+            --from "$SINCE" --config "$CONFIG" -o newest.csv | tee slice-since.log
+          python -m btc5m backtest --data newest.csv --config "$CONFIG" \
+            | tee backtest-since.log
 
       - name: Backtest the slice on Polymarket's fee basis
         run: |
@@ -186,6 +205,27 @@ jobs:
           print("|---|" + "---|" * len(cols))
           for label in rows:
               print(f"| {label} | " + " | ".join(field(log, label) for _, log in cols) + " |")
+
+          since = os.environ.get("SINCE", "")
+          w2, l2 = wins_losses("backtest-since.log")
+          print(f"\n### Measured on its own: the days since {since}\n")
+          if w2 is None:
+              print("The increment did not run.\n")
+          elif w2 + l2:
+              n2 = w2 + l2
+              p2 = w2 / n2
+              se2 = math.sqrt(p2 * (1 - p2) / n2)
+              print(f"**{p2:.2%}** on {n2:,} bets ({w2:,}W / {l2:,}L), "
+                    f"standard error {se2:.2%}, {p2 - BE:+.2%} vs 52.00%. "
+                    f"Measured, not derived: the whole-span figure above minus "
+                    f"the last recorded reading should agree with this to about "
+                    f"one bet at the boundary. The risk layer restarts here, so "
+                    f"compare hit rate and bet count rather than P&L.\n")
+              print("```")
+              print(text("slice-since.log").strip() or "the cut did not run")
+              print("```\n")
+          else:
+              print("No graded bet in the increment yet.\n")
 
           print("\n### Gate votes on the slice\n```")
           print(text("gates-new.log").strip() or "gates did not run")

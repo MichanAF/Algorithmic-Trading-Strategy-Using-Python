@@ -145,3 +145,48 @@ def test_a_contiguous_slice_reports_full_coverage(tmp_path, capsys):
     assert slice_forward.main(["--data", write(series, tmp_path), "--cutoff", CUTOFF,
                               "--config", CONFIG, "-o", out]) == 0
     assert "coverage     100.00%" in capsys.readouterr().out
+
+
+def test_from_grades_a_later_window_of_the_same_span(tmp_path, capsys):
+    """--from measures the days a previous reading missed instead of deriving them."""
+    from btc5m.data import load_csv
+
+    series = bars_with_flow(5000, CUTOFF_TS + 300 * 4000)
+    data = write(series, tmp_path)
+    later = "2026-09-20"                      # a week past the cutoff
+    out = str(tmp_path / "newest.csv")
+    assert slice_forward.main(["--data", data, "--cutoff", CUTOFF,
+                              "--from", later, "--config", CONFIG, "-o", out]) == 0
+
+    cut = load_csv(out)
+    cfg = load_config(CONFIG)
+    warmup = max(SignalEngine(cfg).warmup_bars(build_features(cut, cfg)), 1)
+    assert int(cut.ts[warmup]) == slice_forward.parse_cutoff(later) + 300
+    assert int(cut.ts[warmup - 1]) <= slice_forward.parse_cutoff(later)
+    printed = capsys.readouterr().out
+    assert f"graded from  {later}" in printed
+
+
+def test_from_before_the_cutoff_is_refused(tmp_path, capsys):
+    """Moving the start earlier would score a year the protocol has already spent."""
+    series = bars_with_flow(5000, CUTOFF_TS + 300 * 4000)
+    out = str(tmp_path / "newest.csv")
+    assert slice_forward.main(["--data", write(series, tmp_path), "--cutoff", CUTOFF,
+                              "--from", "2026-09-01", "--config", CONFIG,
+                              "-o", out]) == 2
+    err = capsys.readouterr().err
+    assert "before --cutoff" in err and "already read" in err
+    assert not pathlib.Path(out).exists()
+
+
+def test_from_equal_to_the_cutoff_is_the_ordinary_slice(tmp_path):
+    from btc5m.data import load_csv
+
+    series = bars_with_flow(2600, CUTOFF_TS + 300 * 1700)
+    data = write(series, tmp_path)
+    plain, dated = str(tmp_path / "a.csv"), str(tmp_path / "b.csv")
+    assert slice_forward.main(["--data", data, "--cutoff", CUTOFF,
+                              "--config", CONFIG, "-o", plain]) == 0
+    assert slice_forward.main(["--data", data, "--cutoff", CUTOFF, "--from", CUTOFF,
+                              "--config", CONFIG, "-o", dated]) == 0
+    assert pathlib.Path(plain).read_text() == pathlib.Path(dated).read_text()
